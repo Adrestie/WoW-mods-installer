@@ -1,0 +1,4 @@
+# Built by build.cmd
+installer.exe
+build/
+__pycache__/

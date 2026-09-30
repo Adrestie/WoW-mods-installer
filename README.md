@@ -3,12 +3,13 @@
 One program that installs, and removes, any AzerothCore module that carries a
 manifest: an `installer.json` file at the root of the module folder, which
 declares what the module needs. The format is described in
-[MANIFEST.md](MANIFEST.md). It serves the modules of this repository that carry
-one.
+[MANIFEST.md](MANIFEST.md). It serves the modules listed in
+[WoW-mods](https://github.com/Adrestie/WoW-mods) that carry one.
 
 ## Usage
 
-Download `installer.exe` once, then run it, or drop a module folder (the one
+Download `installer.exe` once, from the
+[releases](https://github.com/Adrestie/WoW-mods-installer/releases), then run it, or drop a module folder (the one
 that contains `installer.json`) on it. Its window holds the module folder, the
 worldserver folder and the game folder; the AzerothCore sources and
 `mysql.exe` are found by themselves when left empty. Under each field, a line
