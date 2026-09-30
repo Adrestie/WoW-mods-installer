@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import stat
+import string
 import struct
 import subprocess
 import sys
@@ -241,21 +242,30 @@ class Server(object):
 
 # ------------------------------------------------------------------ the game and its archives
 
-def archive_rank(name):
-    """(load rank, is official) of an archive, from its file name.
+ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
-    The client reads base archives first (group 0), then locale patches
-    patch-xxXX-* (group 1), then plain patches patch-* (group 2); within a
-    group, the one without suffix, then digits, then letters. The last one
-    read wins."""
+
+def archive_rank(name, locale=None):
+    """(load rank, is official) of an archive, from its file name; locale: the name of the language
+    folder, for an archive that lies there.
+
+    As Wow.exe 12340 does it: base archives first (group 0), then patch-xxXX.MPQ and patch.MPQ
+    (group 1, in that order), then every patch-?.MPQ of Data and patch-xxXX-?.MPQ of the language
+    folder together (group 2), ranked by their path, "Data\\patch-z.mpq" or
+    "Data\\xxXX\\patch-xxXX-z.mpq", compared without letter case. The last one read wins: Data
+    comes after the language folder when the language sorts before "patch" (deDE, enGB, enUS, esES,
+    esMX, frFR, koKR), before it otherwise (ruRU, zhCN, zhTW)."""
     stem = name.lower().rsplit(".", 1)[0]
     if not stem.startswith("patch"):
         return (0, 0, stem), True
     parts = [p for p in stem[5:].split("-") if p]
-    locale = bool(parts) and len(parts[0]) > 1 and not parts[0].isdigit()
-    suffix = parts[-1] if parts and not (locale and len(parts) == 1) else ""
-    rank = (1 if locale else 2, 0 if not suffix else (1 if suffix.isdigit() else 2), suffix)
-    return rank, suffix in ("", "2", "3")
+    in_locale = bool(parts) and len(parts[0]) > 1 and not parts[0].isdigit()
+    suffix = parts[-1] if parts and not (in_locale and len(parts) == 1) else ""
+    official = suffix in ("", "2", "3")
+    if not suffix:
+        return (1, 0 if in_locale else 1, ""), official
+    path = "data\\" + (locale + "\\" if locale else "") + name
+    return (2, 0, path.translate(ASCII_LOWER)), official
 
 
 class Client(object):
@@ -287,6 +297,12 @@ class Client(object):
                 return os.path.join(self.data, n)
         return os.path.join(self.data, folders[0]) if len(folders) == 1 else None
 
+    def rank(self, path):
+        """The load rank of an archive of the game (archive_rank), existing or not."""
+        in_locale = self.locale_dir is not None and \
+            os.path.normcase(os.path.dirname(path)) == os.path.normcase(self.locale_dir)
+        return archive_rank(os.path.basename(path), os.path.basename(self.locale_dir) if in_locale else None)[0]
+
     def archives(self):
         """[(rank, path)] of every archive the game loads, from weakest to strongest."""
         found = []
@@ -298,7 +314,7 @@ class Client(object):
             for n in os.listdir(folder):
                 p = os.path.join(folder, n)
                 if pattern.match(n) and os.path.isfile(p):
-                    found.append((archive_rank(n)[0], p))
+                    found.append((self.rank(p), p))
         return sorted(found)
 
     def stray_archives(self):
@@ -338,25 +354,19 @@ class Client(object):
                 return path
         return None
 
-    def last_archive(self):
-        """Data\\patch-Z.MPQ, the archive the game reads last: the one there (any letter case), or the
-        path of the one to create."""
+    def top_archive(self):
+        """The one archive installs write into, the patch the game reads last: Data\\patch-Z.MPQ,
+        or patch-xxXX-Z.MPQ of the language folder when the game reads that folder after Data
+        (ruRU, zhCN, zhTW). The one there (any letter case), or the path of the one to create."""
+        candidates = [os.path.join(self.data, NEW_ARCHIVE_NAME)]
+        if self.locale_dir:
+            candidates.append(os.path.join(self.locale_dir,
+                                           "patch-%s-Z.MPQ" % os.path.basename(self.locale_dir)))
+        top = max(candidates, key=self.rank)
         for r, p in self.archives():
-            if os.path.dirname(p) == self.data and os.path.basename(p).lower() == NEW_ARCHIVE_NAME.lower():
+            if os.path.normcase(p) == os.path.normcase(top):
                 return p
-        return os.path.join(self.data, NEW_ARCHIVE_NAME)
-
-    def write_target(self, winner):
-        """Where to write a changed file: into its winning archive if that one is
-        custom; otherwise into the last custom archive, if read after it;
-        otherwise into a new archive."""
-        if winner and not archive_rank(os.path.basename(winner))[1]:
-            return winner
-        ranks = dict((p, r) for r, p in self.archives())
-        custom = self.custom_archives()
-        if custom and (winner is None or ranks[custom[-1]] > ranks[winner]):
-            return custom[-1]
-        return os.path.join(self.data, NEW_ARCHIVE_NAME)
+        return top
 
 
 # ------------------------------------------------------------------ DBC
@@ -886,58 +896,39 @@ def module_files_in(M, a, receipt):
     return sorted(found.values())
 
 
-def game_files_target(M, client):
-    """Where the module's game files go: the last custom archive read -- or a new patch-Z read after
-    it when that archive itself holds a file the module replaces, which writing would overwrite."""
-    target = client.write_target(None)
-    if os.path.basename(target).lower() != NEW_ARCHIVE_NAME.lower() and os.path.exists(target):
-        a = client.open(target)
-        if a is not None and any(a.contains(n) for n in M.game_files if n.lower() in M.replaced):
-            return os.path.join(client.data, NEW_ARCHIVE_NAME)
-    return target
-
-
 def install_plan(M, client):
-    """({file name: archive}, [full archives]): where an install writes each DBC and game file.
-    An existing archive without room left for its share (hash table full, a v1 archive past 4 GB)
-    gives way to Data\\patch-Z.MPQ, created if needed, which the game reads last; patch-Z itself
-    full is refused."""
-    last = client.last_archive()
-    full = []
-    while True:
-        where, sizes = {}, {}
-
-        def put(name, target, size):
-            target = last if target in full else target
-            where[name] = target
-            sizes.setdefault(target, {})[name] = size
-        for d in M.dbc:
-            if d.client is not None:
-                name = "DBFilesClient\\" + d.file
-                w = client.winner(name)
-                if w:
-                    put(name, client.write_target(w), client.open(w).size(name) + sum(
-                        4 * d.fields + sum(len(v.encode("utf-8")) + 1 if isinstance(v, str) else
-                                           len(v) if isinstance(v, bytes) else 0 for v in r) for r in d.client))
-        if M.game_files:
-            target = game_files_target(M, client)
-            for name, source in M.game_files.items():
-                put(name, target, os.path.getsize(source))
-        for target, names in sizes.items():
-            names[receipt_name(M)] = sum(len(n) + 8 for n in names) + 1024
-        now_full = [t for t in sizes if os.path.exists(t) and not mpq_archive.has_room(t, sizes[t])]
-        if not now_full:
-            return where, full
-        for t in now_full:
-            if os.path.normcase(t) == os.path.normcase(last):
-                raise InstallerError("%s has no room left for this module (hash table full, or a v1 archive "
-                                     "past 4 GB), and no archive is read after it" % t)
-        full += now_full
+    """{file name: archive}: where an install writes each DBC and game file -- all into the top
+    archive (Client.top_archive), a DBC read from where the game reads it. Refused before anything
+    is written when that archive has no room left (hash table full, a v1 archive past 4 GB), or
+    when the game reads one of the module's DBC files from an archive read after it."""
+    top = client.top_archive()
+    where, sizes = {}, {}
+    for d in M.dbc:
+        if d.client is not None:
+            name = "DBFilesClient\\" + d.file
+            w = client.winner(name)
+            if w:
+                if client.rank(w) > client.rank(top):
+                    raise InstallerError("the game reads %s from %s, read after %s: the module's rows would "
+                                         "stay hidden" % (name, w, top))
+                where[name] = top
+                sizes[name] = client.open(w).size(name) + sum(
+                    4 * d.fields + sum(len(v.encode("utf-8")) + 1 if isinstance(v, str) else
+                                       len(v) if isinstance(v, bytes) else 0 for v in r) for r in d.client)
+    for name, source in M.game_files.items():
+        where[name] = top
+        sizes[name] = os.path.getsize(source)
+    if sizes:
+        sizes[receipt_name(M)] = sum(len(n) + 8 for n in sizes) + 1024
+        if os.path.exists(top) and not mpq_archive.has_room(top, sizes):
+            raise InstallerError("%s has no room left for this module (hash table full, or a v1 archive "
+                                 "past 4 GB)" % top)
+    return where
 
 
 def install_targets(M, client):
     """The archives an install writes into, existing or to be created."""
-    return sorted(set(install_plan(M, client)[0].values()))
+    return sorted(set(install_plan(M, client).values()))
 
 
 def survey(M, server, client, dbs):
@@ -1023,7 +1014,7 @@ def survey(M, server, client, dbs):
             if others:
                 s.client_conflicts.append((w, d.file, others))
     mine = {(c.lower(), n.lower()) for c, n in s.files}
-    target = os.path.normcase(game_files_target(M, client))
+    target = os.path.normcase(client.top_archive())
     for name, source in M.game_files.items():
         w = client.winner(name)
         if not w or archive_rank(os.path.basename(w))[1] or (w.lower(), name.lower()) in mine:
@@ -1392,12 +1383,9 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
     if refusals and not patch_exe:
         raise InstallerError(refusal_text(client, refusals) + ": allow it (--patch-wow-exe in the console)")
 
-    # 1. Game: each DBC rewritten into the archive that provides it (or above),
-    #    files into the last custom archive read (a new one if there is none),
-    #    patch-Z for an archive without room left; a receipt in each archive written.
-    where, full = install_plan(M, client)
-    for path in full:
-        say("  %s has no room left for the module: it goes into %s" % (path, client.last_archive()))
+    # 1. Game: each DBC, as the game reads it, and each game file into the top archive,
+    #    with a receipt.
+    where = install_plan(M, client)
     writes, created, receipts = {}, set(), {}
     for d in M.dbc:
         if d.client is None:

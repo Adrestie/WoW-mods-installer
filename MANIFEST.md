@@ -120,11 +120,11 @@ bytes left over; `fields` is still the count of the file's header, the rows
 come from a reduced DBC, and a text field must be one of the words.
 
 On install, the server file gets the rows appended. On the game side, the file
-is read from the archive the game reads it from and rewritten, rows appended,
-into that archive if it is a custom one, otherwise into the last custom
-archive read, if the game reads it after (a new `Data\patch-Z.MPQ`
-otherwise); into `Data\patch-Z.MPQ` when that archive has no room left. On removal, the
-rows go, and so do the strings the install appended at the end of the file.
+is read from the archive the game reads it from and written, rows appended,
+into the archive the game reads last (`Data\patch-Z.MPQ`, or
+`patch-xxXX-Z.MPQ` of the language folder for ruRU, zhCN and zhTW; see the
+README). On removal, the rows go, and so do the strings the install appended
+at the end of the file.
 
 ### game_files
 
@@ -137,9 +137,8 @@ rows go, and so do the strings the install appended at the end of the file.
 
 `sources`: package folders whose tree is the game's tree
 (`data/art/Interface/Attriboost/x.blp` is `Interface\Attriboost\x.blp`). The
-files are written into the last custom archive read (a new
-`Data\patch-Z.MPQ` when there is none, or when that archive has no room
-left). A file that archive already holds is left alone and is not the module's.
+files are written into the archive the game reads last, like the DBC files.
+A file that archive already holds is left alone and is not the module's.
 
 `extensions` (optional): only the files of `sources` with these extensions
 are written (`[".blp", ".m2"]`); previews or notes kept beside them stay out.

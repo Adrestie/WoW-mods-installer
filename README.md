@@ -47,10 +47,13 @@ Only the archives the game loads count: in `Data`, the base archives,
 archives, `patch-xxXX.MPQ` and `patch-xxXX-?.MPQ`. Another `.mpq` file is never
 written into; what a module left in one is removed with the rest.
 
-An archive without room left for the module (hash table full, or a v1 archive
-past 4 GB) is not written into: its share goes into `Data\patch-Z.MPQ`, the
-archive the game reads last, created if there is none. When `patch-Z.MPQ` itself
-has no room left, it refuses, before writing anything.
+Everything a module puts into the game goes into one archive, the patch the
+game reads last, created if there is none: `Data\patch-Z.MPQ`, or
+`patch-xxXX-Z.MPQ` in the language folder for a Russian or Chinese client
+(ruRU, zhCN, zhTW), whose language folder the game reads after `Data`. No other
+archive is written into. When that archive has no room left (hash table full,
+or a v1 archive past 4 GB), or when the game reads one of the module's DBC
+files from an archive read after it, it refuses, before writing anything.
 
 Before a game archive changes, it offers to copy it beside itself
 (`<name>.backup-<date>-<time>`), ticked by default, once it has checked that the
