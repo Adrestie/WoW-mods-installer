@@ -445,6 +445,19 @@ def dbc_survey(raw, name, d, rows):
     return sorted(ours), sorted(others)
 
 
+def dbc_layout_error(client, name, path, fields, d):
+    """The refusal when the DBC the game reads (from the archive path) has another field count
+    than the manifest's (d); the archives read after it that could not be opened are named, since
+    the game may read the file from one of them."""
+    loaded = [p for r, p in client.archives()]
+    after = set(loaded[loaded.index(path) + 1:]) if path in loaded else set()
+    unread = [p for p, _ in client.unreadable if p in after]
+    return InstallerError("%s, read by the game from %s, has %d fields, %d expected: unexpected client version%s"
+                          % (name, path, fields, d.fields,
+                             "; or the game reads it from an archive the installer cannot open: %s"
+                             % ", ".join(unread) if unread else ""))
+
+
 def dbc_add(raw, name, d, rows):
     """The DBC with the module's rows appended (rows already carrying their
     identifiers removed first); their strings appended to the string block."""
@@ -975,7 +988,16 @@ def survey(M, server, client, dbs):
             name = "DBFilesClient\\" + d.file
             if not a.contains(name):
                 continue
-            ours, others = dbc_survey(a.read(name), name, d, d.client)
+            raw = a.read(name)
+            fields = dbc_split(raw, name)[0]
+            if fields != d.fields:
+                # Another client version's file (an older one in a language archive the patches
+                # override, another language's): it holds none of the module's rows. Only the
+                # file the game reads must have the module's layout.
+                if path == client.winner(name):
+                    raise dbc_layout_error(client, name, path, fields, d)
+                continue
+            ours, others = dbc_survey(raw, name, d, d.client)
             named = set((receipt or {}).get("dbc", {}).get(d.file, []))
             mine = sorted(set(ours) | (set(others) & named))
             others = [i for i in others if i not in named]
@@ -993,7 +1015,11 @@ def survey(M, server, client, dbs):
         name = "DBFilesClient\\" + d.file
         w = client.winner(name)
         if w and archive_rank(os.path.basename(w))[1]:
-            ours, others = dbc_survey(client.open(w).read(name), name, d, d.client)
+            raw = client.open(w).read(name)
+            fields = dbc_split(raw, name)[0]
+            if fields != d.fields:
+                raise dbc_layout_error(client, name, w, fields, d)
+            ours, others = dbc_survey(raw, name, d, d.client)
             if others:
                 s.client_conflicts.append((w, d.file, others))
     mine = {(c.lower(), n.lower()) for c, n in s.files}
