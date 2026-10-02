@@ -16,7 +16,7 @@ Paths inside the package are relative to the module folder, with `/`.
 | `module` | yes | name of the module folder under `modules/` in the server sources (letters, digits, `_`, `.`, `-`); the name its receipts carry |
 | `title` | no | display name |
 | `server_module` | no | `false`: a package without server module, see below (`true` by default) |
-| `worldserver` | no | `"required"` (default): the worldserver folder must be given; `"optional"`: it may be left empty, see below (refused for a server module) |
+| `fields` | yes | the folders the module needs, required or optional, see below |
 | `signature` | yes, unless `server_module` is `false` | package files that identify the module: a folder of `modules/` that contains all of them is the module, whatever its name |
 | `exclude_from_sources` | no | package folders or files not copied into `modules/` (client data, for instance); `.git` and `__pycache__` never are |
 | `configuration` | no | the module's `.conf`, see below |
@@ -40,6 +40,46 @@ always applies its SQL itself.
 
 The AzerothCore module loader must be named after the folder:
 `Add<module, with - replaced by _>Scripts`.
+
+### fields
+
+```json
+"fields": {
+  "game": "required",
+  "worldserver": { "optional": "Only if you run the server: adds 18 statistics. Leave empty if you only play." },
+  "mysql": { "optional": "Only with the worldserver folder. Found by itself when left empty." }
+}
+```
+
+The folders the module needs besides its own: `game` (the folder of
+`Wow.exe`), `worldserver` (the folder of `worldserver.exe`), `sources` (the
+AzerothCore sources) and `mysql` (`mysql.exe`). Each is `"required"`, or
+`{"optional": "<why>"}`: the window shows required fields in one panel and
+optional ones in another, each with its reason. A field left out is of no use
+to the module: the window does not show it, and the installer does not read
+it.
+
+Each field must match the rest of the manifest, or the manifest is refused:
+
+| Field | Declared exactly when | Optional |
+|---|---|---|
+| `game` | the module has `game_files`, `addons` or client DBC rows | never |
+| `worldserver` | a server module, server DBC rows, or `database` | for a package without server module: left empty, the server part is left out (see below) |
+| `sources` | a server module | never |
+| `mysql` | a server module, or `database` | exactly when `worldserver` is |
+
+`sources` and `mysql` are found by themselves when left empty (the build
+folder's `CMakeCache.txt`; `worldserver.conf`, the PATH, MySQL Server's
+folder).
+
+The four kinds of modules:
+
+| Module | `game` | `worldserver` | `sources` | `mysql` |
+|---|---|---|---|---|
+| client only (an addon) | required | | | |
+| server or client (ForeverUI) | required | optional | | optional |
+| server and client | required | required | required | required |
+| server only | | required | required | required |
 
 ### configuration
 
@@ -174,16 +214,15 @@ With `"server_module": false`, the package is for the game, with a server
 part: the installer writes its game files and its addons, adds its DBC rows
 (game side, and server side for the entries whose `server` is set), and
 applies its SQL itself. Nothing goes into the server's sources, configuration
-or Lua scripts, and the server needs no rebuild; the sources folder is not
-asked, and `mysql.exe` only when there is a `database`. `signature`,
+or Lua scripts, and the server needs no rebuild. `signature`,
 `exclude_from_sources`, `configuration`, `lua` and `shared` are refused;
 `database` holds `rows` only, and SQL in `data/sql` for a database needs its
 `rows`, so that removal deletes what the SQL adds. The worldserver folder
 gives the server DBC folder and the databases, and nothing is written while
 the worldserver runs.
 
-With `"worldserver": "optional"`, the worldserver folder may be left empty: a
-player who does not run the server. Only the game part then goes in: game
+With `worldserver` optional in `fields`, the worldserver folder may be left
+empty: a player who does not run the server. Only the game part then goes in: game
 files, addons, and the DBC entries without a `server` side. The server part
 (DBC entries with a `server` side, on both sides, and the SQL) is left out.
 A removal without the worldserver folder takes what the game holds; when the

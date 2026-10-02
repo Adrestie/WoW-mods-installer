@@ -10,11 +10,12 @@ declares what the module needs. The format is described in
 
 Download `installer.exe` once, from the
 [releases](https://github.com/Adrestie/WoW-mods-installer/releases), then run it, or drop a module folder (the one
-that contains `installer.json`) on it. Its window holds the module folder, the
-worldserver folder and the game folder; the AzerothCore sources and
+that contains `installer.json`) on it. Its window holds the module folder,
+then the folders that module's manifest asks for: the required ones in one
+panel, the optional ones in another, each with the reason it is optional. A
+folder the module does not use is not shown. The AzerothCore sources and
 `mysql.exe` are found by themselves when left empty. Under each field, a line
-says what goes there and whether the path given is the expected one. It
-remembers them in
+says whether the path given is the expected one. It remembers them in
 `%APPDATA%\WoW-mods\installer-settings.json`. **Check** reads the server, the
 game archives and the database, then shows the module's state and the traces
 found, and the one button that fits: **Install**, **Remove** or **Remove
@@ -79,7 +80,7 @@ unexpected error).
 | Option | Effect |
 |---|---|
 | `module` | module folder (the one that contains `installer.json`) |
-| `--server DIR` | worldserver folder (the one that contains `worldserver.exe`); `--server ""` leaves it empty, when the module's manifest makes it optional |
+| `--server DIR` | worldserver folder (the one that contains `worldserver.exe`); `--server ""` leaves it empty, when the module's manifest makes it optional; ignored when the module does not use it |
 | `--sources DIR` | AzerothCore sources, when `CMakeCache.txt` does not lead to them |
 | `--client DIR` | game folder (the one that contains `Wow.exe` and `Data`) |
 | `--mysql FILE` | path of `mysql.exe` |

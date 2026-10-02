@@ -839,7 +839,8 @@ def shared_providers(component, server):
 def module_backups(M, server, client):
     found = []
     for suffix in M.backups:
-        for folder in (server.dbc if server else None, client.data, client.locale_dir):
+        for folder in (server.dbc if server else None, client.data if client else None,
+                       client.locale_dir if client else None):
             if folder and os.path.isdir(folder):
                 found += [os.path.join(folder, n) for n in sorted(os.listdir(folder))
                           if n.lower().endswith(suffix.lower())]
@@ -948,17 +949,17 @@ def install_plan(M, client, server):
 
 def install_targets(M, client, server):
     """The archives an install writes into, existing or to be created."""
-    return sorted(set(install_plan(M, client, server).values()))
+    return sorted(set(install_plan(M, client, server).values())) if client else []
 
 
 def survey(M, server, client, dbs):
-    """The State of the module on this server (None: no worldserver folder), game and databases."""
+    """The State of the module on this server and game (None: no such folder) and databases."""
     s = State()
     # Only what an install would write can stand in its way.
     installed = installed_dbc(M, server)
     if M.server_module:
         s.sources = module_source_dirs(M, server)
-    s.addons = [d for d in (addon_folder(client, n) for n in M.addons) if os.path.isdir(d)]
+    s.addons = [d for d in (addon_folder(client, n) for n in M.addons) if os.path.isdir(d)] if client else []
     if M.conf:
         s.confs = [p for p in (os.path.join(server.module_confs, M.conf["file"]),
                                os.path.join(server.module_confs, M.conf["file"] + ".dist"))
@@ -985,6 +986,22 @@ def survey(M, server, client, dbs):
             if others:
                 s.server_conflicts.append((p, d.file, others))
 
+    if client is not None:
+        survey_game(M, client, s, installed)
+
+    s.backups = module_backups(M, server, client)
+    for key, db in dbs.items():
+        strong, weak = survey_database(db, M.databases.get(key, {}))
+        if strong:
+            s.db_strong[key] = strong
+        if weak:
+            s.db_weak[key] = weak
+    return s
+
+
+def survey_game(M, client, s, installed):
+    """Adds to State s what the game holds of the module. installed: the DBC entries an install
+    would write, the only ones whose other rows stand in its way."""
     # Custom game archives: receipts, rows, files. In an archive the game does not load,
     # other rows with the module's identifiers are no conflict.
     strays = client.stray_archives()
@@ -1048,15 +1065,6 @@ def survey(M, server, client, dbs):
         with open(source, "rb") as f:
             if client.open(w).read(name) != f.read():
                 s.file_conflicts.append((w, name))
-
-    s.backups = module_backups(M, server, client)
-    for key, db in dbs.items():
-        strong, weak = survey_database(db, M.databases.get(key, {}))
-        if strong:
-            s.db_strong[key] = strong
-        if weak:
-            s.db_weak[key] = weak
-    return s
 
 
 # ------------------------------------------------------------------ Wow.exe and backups
@@ -1290,7 +1298,8 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True):
                 client.forget(path)
                 os.remove(path)
                 say("  %s held nothing but unchanged copies: archive deleted" % path)
-    restore_wow_exe(M, client)
+    if client is not None:
+        restore_wow_exe(M, client)
 
     # Server files.
     for d in state.sources:
@@ -1414,7 +1423,7 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
 
     # 1. Game: each DBC, as the game reads it, and each game file into the top archive,
     #    with a receipt.
-    where = install_plan(M, client, server)
+    where = install_plan(M, client, server) if client else {}
     writes, created, receipts = {}, set(), {}
     for d in installed:
         if d.client is None:
@@ -1677,10 +1686,10 @@ def print_build_steps(server):
 
 def open_server(M, bin_dir, sources):
     """The Server of this worldserver folder, with its sources checked when the module needs them;
-    None when the folder is left empty and the manifest makes it optional."""
+    None when the manifest does not use the folder, or makes it optional and it is left empty."""
+    if "worldserver" not in M.fields or (not bin_dir and M.worldserver_optional):
+        return None
     if not bin_dir:
-        if M.worldserver_optional:
-            return None
         raise InstallerError("no worldserver folder given")
     server = Server(bin_dir, sources or None)
     if M.server_module and not server.has_valid_sources():
@@ -1713,7 +1722,7 @@ def refuse_while_running(server, client):
     if ws:
         raise InstallerError("the worldserver is running (%s): stop it, then run the installer again"
                              % ", ".join(p or n for n, p in ws))
-    game = running_game(client)
+    game = running_game(client) if client else []
     if game:
         raise InstallerError("the game is open (%s): close it, then run the installer again"
                              % ", ".join(p for n, p in game))
@@ -1732,7 +1741,7 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
         else:
             say("Nothing was changed: the installation stopped before its first write.")
         raise
-    missing = missing_after_install(M, server, Client(client.folder), dbs)
+    missing = missing_after_install(M, server, Client(client.folder) if client else None, dbs)
     heading("Check")
     if missing:
         raise InstallerError("after installation, missing: %s" % "; ".join(missing))
@@ -1760,7 +1769,7 @@ def remove_and_check(M, server, client, dbs, state, leftovers=False, backup=True
 
 
 def check_removal(M, server, client, dbs):
-    left = survey(M, server, Client(client.folder), dbs)
+    left = survey(M, server, Client(client.folder) if client else None, dbs)
     heading("Check")
     if left.strong():
         print_state(left)
@@ -1784,7 +1793,7 @@ def run_console(M, args, settings):
     # --server "" leaves the worldserver folder empty, for a manifest that makes it optional
     server = open_server(M, args.server if args.server is not None else settings.get("server"),
                          args.sources or settings.get("sources"))
-    client = Client(args.client or settings.get("client") or "")
+    client = Client(args.client or settings.get("client") or "") if "game" in M.fields else None
     dbs = {}
     if uses_databases(M, server):
         dbs = open_databases(server, find_mysql(server, settings, args.mysql))
@@ -1795,13 +1804,14 @@ def run_console(M, args, settings):
     check_package_place(M, server)
 
     heading("Current state")
-    say("  (reading the game archives, a few seconds)")
+    if client is not None:
+        say("  (reading the game archives, a few seconds)")
     state = survey(M, server, client, dbs)
     print_state(state)
     if state.has_conflicts():
         say("  Carry its identifiers without proof that they are its own:")
         print_conflicts(state)
-    for path, message in client.unreadable:
+    for path, message in (client.unreadable if client else []):
         say("  archive ignored, unreadable: %s (%s)" % (path, message))
     if not state.strong() and not state.weak():
         refusals = wow_exe_refusals(M, client)
@@ -1830,20 +1840,29 @@ def run_console(M, args, settings):
 
 def folder_lines(M, server, client, dbs):
     """[(label, path)] of the places the installer works in."""
-    if server is None:
-        return [("worldserver", "none: the game part only"), ("game", client.folder)]
-    lines = [("worldserver", server.bin)]
-    if M.server_module:
-        lines += [("sources", server.sources), ("configuration", server.module_confs), ("Lua scripts", server.lua)]
-    lines += [("server DBC", server.dbc), ("game", client.folder)]
+    lines = []
+    if server is not None:
+        lines.append(("worldserver", server.bin))
+        if M.server_module:
+            lines += [("sources", server.sources), ("configuration", server.module_confs),
+                      ("Lua scripts", server.lua)]
+        lines.append(("server DBC", server.dbc))
+    elif "worldserver" in M.fields:
+        lines.append(("worldserver", "none: the game part only"))
+    if client is not None:
+        lines.append(("game", client.folder))
     if dbs:
         lines.append(("databases", "%s, %s" % (dbs["world"].name, dbs["characters"].name)))
     return lines
 
 
 def remember(settings, M, server, client, dbs):
-    """Keeps the folders that worked, for the next run."""
-    settings.update({"module": M.root, "server": server.bin if server else "", "client": client.folder})
+    """Keeps the folders that worked, for the next run (a folder the module did without stays as it was)."""
+    settings["module"] = M.root
+    if server is not None:
+        settings["server"] = server.bin
+    if client is not None:
+        settings["client"] = client.folder
     if M.server_module:
         settings["sources"] = server.sources
     if dbs:

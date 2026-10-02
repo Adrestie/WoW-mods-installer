@@ -13,6 +13,9 @@ import re
 from core import InstallerError, MANIFEST_NAME, dbc_split, module_sql_files, read_version, row_values, sql_list
 
 FORMAT = "wow-mods-installer/1"
+# The folders a module may need besides its own: the game, the worldserver, the AzerothCore sources
+# and the MySQL client.
+FIELDS = ("game", "worldserver", "sources", "mysql")
 
 
 class DbcDef(object):
@@ -294,6 +297,44 @@ def _databases(root, M, entry):
     return dbs
 
 
+def _fields(entry, M):
+    """({field: "required" or "optional"}, {field: why it is optional}): the folders the module
+    needs, as the manifest declares them. A field it leaves out is of no use to it; each field must
+    match what the rest of the manifest needs."""
+    if not isinstance(entry, dict) or not entry:
+        _error("fields", 'the folders the module needs, e.g. {"game": "required"}')
+    fields, reasons = {}, {}
+    for k, v in entry.items():
+        if k not in FIELDS:
+            _error("fields", "unknown field %r (%s)" % (k, ", ".join(FIELDS)))
+        if v == "required":
+            fields[k] = "required"
+        elif isinstance(v, dict) and set(v) == {"optional"} and isinstance(v["optional"], str) \
+                and v["optional"].strip():
+            fields[k] = "optional"
+            reasons[k] = v["optional"].strip()
+        else:
+            _error("fields", '%s: "required", or {"optional": "why it is optional"}' % k)
+    needs = {"game": bool(M.game_files or M.addons or any(d.client is not None for d in M.dbc)),
+             "worldserver": M.server_module or any(d.server is not None for d in M.dbc) or bool(M.databases),
+             "sources": M.server_module,
+             "mysql": M.server_module or bool(M.databases)}
+    for k in FIELDS:
+        if needs[k] and k not in fields:
+            _error("fields", "the module needs the %s field: declare it" % k)
+        if not needs[k] and k in fields:
+            _error("fields", "%s is of no use to this module: leave it out" % k)
+    if fields.get("game") == "optional":
+        _error("fields", "game: the game folder cannot be optional")
+    if M.server_module:
+        for k in ("worldserver", "sources", "mysql"):
+            if fields[k] != "required":
+                _error("fields", "%s: a server module cannot do without it" % k)
+    if "mysql" in fields and fields["mysql"] != fields["worldserver"]:
+        _error("fields", "mysql: optional exactly when worldserver is (the databases come from worldserver.conf)")
+    return fields, reasons
+
+
 def load(root):
     """The Module described by root/installer.json."""
     path = os.path.join(root, MANIFEST_NAME)
@@ -320,14 +361,6 @@ def load(root):
         server_keys = [k for k in ("signature", "exclude_from_sources", "configuration", "lua", "shared") if k in m]
         if server_keys:
             _error(server_keys[0], "a package without server module has no %s" % ", ".join(server_keys))
-    # worldserver "optional": the worldserver folder may be left empty (a player), and the server
-    # part is then left out
-    worldserver = m.get("worldserver", "required")
-    if worldserver not in ("required", "optional"):
-        _error("worldserver", '"required" or "optional"')
-    if worldserver == "optional" and M.server_module:
-        _error("worldserver", "a server module needs the worldserver folder")
-    M.worldserver_optional = worldserver == "optional"
     M.signature = m.get("signature") or []
     if M.server_module and not M.signature:
         _error("signature", "at least one file that identifies the module in modules/")
@@ -356,6 +389,8 @@ def load(root):
                 _error("database", "data/sql holds SQL for the %s database: declare in database.%s.rows "
                                    "the rows it adds, so that removal deletes them" % (key, key))
     M.shared = _shared(M.root, M, m.get("shared"))
+    M.fields, M.reasons = _fields(m.get("fields"), M)
+    M.worldserver_optional = M.fields.get("worldserver") == "optional"
     missing = [p for p in list(M.signature) + ([M.conf["template"]] if M.conf else [])
                if not os.path.isfile(os.path.join(M.root, p))]
     missing += [os.path.relpath(p, M.root) for p in (M.lua["files"].values() if M.lua else [])

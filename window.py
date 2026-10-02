@@ -28,6 +28,8 @@ ACCENT = "#5b8def"
 GOOD = "#5fcf85"
 BAD = "#f07070"
 SELECTED = "#35507f"
+OPTIONAL_CARD = "#24262a"     # optional folder panel, darker than the required one
+OPTIONAL_ACCENT = "#c7a24a"   # its left edge, its title and the reasons
 
 # Colour of the state badge, per state.
 BADGES = {
@@ -45,107 +47,112 @@ ACTIONS = {
     "leftovers": ("Remove leftovers", "Leftovers.TButton", "#c7771f", "#d98a2e"),
 }
 
-# The fields: (key in the settings, label, kind of path, used by: "all" modules, "server" modules,
-# or "database" -- server modules and packages with database rows).
+# The fields, in their order on screen: (key in the settings, label, kind of path). The module folder
+# is always shown; each other field shows only if the module's manifest declares it (its name there:
+# MANIFEST_FIELD), under Required or Optional.
 FIELDS = [
-    ("module", "Module folder", "folder", "all"),
-    ("server", "Worldserver folder", "folder", "all"),
-    ("sources", "AzerothCore sources", "folder", "server"),
-    ("client", "Game folder", "folder", "all"),
-    ("mysql", "MySQL client", "file", "database"),
+    ("module", "Module folder", "folder"),
+    ("client", "Game folder", "folder"),
+    ("server", "Worldserver folder", "folder"),
+    ("sources", "AzerothCore sources", "folder"),
+    ("mysql", "MySQL client", "file"),
 ]
+MANIFEST_FIELD = {"client": "game", "server": "worldserver", "sources": "sources", "mysql": "mysql"}
+# Fields found by the installer when left empty.
+FOUND_BY_ITSELF = ("sources", "mysql")
 # What goes in each field, said while it is empty.
 EMPTY = {
-    "module": "The folder of the module to install or remove: the one that holds installer.json "
-              "(for example ...\\WoW-mods\\mod-spheregrid).",
-    "server": "The server folder that holds worldserver.exe (for example ...\\build\\bin\\RelWithDebInfo). "
-              "The configuration, the databases, the Lua scripts and the server DBC files are found from it.",
-    "sources": "Leave empty: found through the build folder's CMakeCache.txt. Otherwise the AzerothCore source "
-               "tree, the folder that holds src and modules: the module is copied into its modules folder.",
-    "client": "The World of Warcraft 3.3.5a folder, the one that holds Wow.exe and Data (not Data itself): "
-              "the module's DBC rows and art are written into its Data archives.",
-    "mysql": "Leave empty: found by itself (worldserver.conf, the PATH, MySQL Server's bin folder). Otherwise "
-             "mysql.exe, in the bin folder of MySQL Server: it reads and cleans the databases.",
+    "module": "The folder that holds installer.json.",
+    "client": "The folder that holds Wow.exe and Data.",
+    "server": "The folder that holds worldserver.exe.",
+    "sources": "Found by itself when left empty (the folder that holds src and modules).",
+    "mysql": "Found by itself when left empty (mysql.exe of MySQL Server).",
 }
-# The worldserver field, empty, when the module's manifest makes it optional.
-EMPTY_OPTIONAL_SERVER = "Leave empty if you only play, on a server you do not run: only the game part is " \
-                        "installed, without the rows that need the server. If you run the server, the folder " \
-                        "that holds worldserver.exe: the server DBC files and the databases are found from it."
 
 
-def field_state(key, path, optional=False):
+def field_state(key, path):
     """(ok, text) of a field's content: ok is None while it is empty, True if the path is the one expected
-    there, False otherwise; text says so, or what goes there. optional: the module may do without it."""
+    there, False otherwise; text says so, or what goes there."""
     if not path:
-        return None, EMPTY_OPTIONAL_SERVER if key == "server" and optional else EMPTY[key]
+        return None, EMPTY[key]
     if key == "module":
         folder = core.module_folder(path)
         if folder:
             try:
                 with open(os.path.join(folder, core.MANIFEST_NAME), encoding="utf-8") as f:
                     m = json.load(f)
-                return True, "installer.json found: %s (%s)." % (m.get("title") or m.get("module"), m.get("module"))
+                return True, "%s (%s)" % (m.get("title") or m.get("module"), m.get("module"))
             except (OSError, ValueError, AttributeError):
-                return False, "installer.json is unreadable in this folder."
+                return False, "installer.json is unreadable."
         if os.path.isdir(path):
             inside = sorted(n for n in os.listdir(path) if os.path.isfile(os.path.join(path, n, core.MANIFEST_NAME)))
             if inside:
-                return False, "This folder holds several modules: choose one of them (%s)." % ", ".join(inside[:4])
-        return False, "No installer.json in this folder: choose the module's own folder, the one that holds it."
+                return False, "This folder holds several modules: choose one (%s)." % ", ".join(inside[:4])
+        return False, "No installer.json here."
     if key == "server":
         if os.path.isfile(os.path.join(path, "worldserver.exe")):
-            return True, "worldserver.exe found: the configuration, the databases, the Lua scripts and the " \
-                         "server DBC files are read from here."
-        return False, "No worldserver.exe in this folder: choose the folder that holds it."
+            return True, "worldserver.exe found."
+        return False, "No worldserver.exe here."
     if key == "sources":
         if os.path.isdir(os.path.join(path, "src")) and os.path.isdir(os.path.join(path, "modules")):
-            return True, "AzerothCore sources: the module is copied into %s." % os.path.join(path, "modules")
-        return False, "Not an AzerothCore source tree: the folder must hold src and modules."
+            return True, "AzerothCore sources found."
+        return False, "Not an AzerothCore source tree (src and modules)."
     if key == "client":
-        if os.path.basename(os.path.normpath(path)).lower() == "data" and \
-                os.path.isfile(os.path.join(os.path.dirname(os.path.normpath(path)), "Wow.exe")):
-            return False, "This is the Data folder: choose its parent, the one that holds Wow.exe."
+        if os.path.basename(os.path.normpath(path)).lower() == "data" and                 os.path.isfile(os.path.join(os.path.dirname(os.path.normpath(path)), "Wow.exe")):
+            return False, "This is the Data folder: choose its parent."
         try:
             core.Client(path)
-            return True, "Game found: the module's DBC rows and art are written into its Data archives."
+            return True, "Game found."
         except (core.InstallerError, OSError):
-            return False, "No Data folder with .MPQ archives here: choose the folder that holds Wow.exe and Data."
+            return False, "No Data folder with .MPQ archives here."
     if os.path.isfile(path) and os.path.basename(path).lower() == "mysql.exe":
-        return True, "MySQL client: it reads and cleans the databases named in worldserver.conf."
-    return False, "Not mysql.exe: choose mysql.exe in the bin folder of MySQL Server."
+        return True, "mysql.exe found."
+    return False, "Not mysql.exe."
 
 
-def module_needs(path):
-    """(server module, worldserver folder optional, database rows) as the module's manifest says;
-    (True, False, True) when it cannot be read."""
+def module_fields(path):
+    """({field key: "required" or "optional"}, {field key: why it is optional}) from the "fields" of the
+    module's manifest, by settings key; ({}, {}) while it cannot be read."""
     try:
         with open(os.path.join(core.module_folder(path) or "", core.MANIFEST_NAME), encoding="utf-8") as f:
-            m = json.load(f)
-        return m.get("server_module", True) is not False, m.get("worldserver") == "optional", "database" in m
+            declared = json.load(f).get("fields") or {}
     except (OSError, ValueError, AttributeError):
-        return True, False, True
+        return {}, {}
+    needs, reasons = {}, {}
+    for key, name in MANIFEST_FIELD.items():
+        v = declared.get(name)
+        if v == "required":
+            needs[key] = "required"
+        elif isinstance(v, dict) and isinstance(v.get("optional"), str):
+            needs[key], reasons[key] = "optional", v["optional"]
+    return needs, reasons
 
 
-def field_used(used_by, server_module, database):
-    """True if a field whose FIELDS entry says used_by matters for this module."""
-    return used_by == "all" or server_module or (used_by == "database" and database)
-
-
-def install_parts(M, server):
+def install_parts(M, server, client):
     """What an install puts in place, in words."""
+    parts = ["sources"] + (["configuration"] if M.conf else []) + (["Lua scripts"] if M.lua else []) \
+        if M.server_module else []
+    if client is not None:
+        parts += (["game files"] if M.game_files else []) + (["addons"] if M.addons else [])
+    if core.installed_dbc(M, server):
+        parts.append("DBC rows")
     if M.server_module:
-        return "sources, configuration, Lua scripts, DBC rows and game files; the server is rebuilt afterwards"
+        parts.append("SQL")
+    elif server is not None and M.databases:
+        parts.append("database rows")
+    text = ", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else "".join(parts)
+    if M.server_module:
+        return text + " (the server is rebuilt afterwards)"
     if server is None and core.has_server_part(M):
-        return "game files and addons only: without a worldserver folder, the DBC rows and database rows that " \
-               "need the server are left out"
-    return "game files, addons and DBC rows" + (", and database rows" if server is not None and M.databases else "")
+        return text + " (no worldserver folder: the server part is left out)"
+    return text
 
 
 def removal_parts(M, dbs):
     """What a removal takes away, in words."""
     if M.server_module:
         return "files, DBC rows and database data, players' data included"
-    return "game files, addons and DBC rows" + (", and database rows" if dbs else "")
+    return "game files, addons and DBC rows" + (", database rows" if dbs else "")
 
 
 def dark_title_bar(window):
@@ -192,32 +199,34 @@ class InstallerWindow(object):
         ttk.Label(outer, text="Installs a module, or removes it when it is present.",
                   style="Hint.TLabel").pack(anchor="w", pady=(0, 12))
 
-        # Folders: one row per field, with what goes there under it.
-        ttk.Label(outer, text="FOLDERS", style="Section.TLabel").pack(anchor="w", pady=(0, 4))
-        box = ttk.Frame(outer, style="Card.TFrame", padding=(14, 10))
-        box.pack(fill="x")
-        box.columnconfigure(1, weight=1)
-        self.vars, self.rows, self.notes = {}, {}, {}
-        for i, (key, label, kind, _) in enumerate(FIELDS):
+        # Folders: the module folder, then the fields its manifest declares, required ones in the first
+        # panel, optional ones (with the reason) in the second; a field it leaves out is not shown.
+        folders = ttk.Frame(outer)
+        folders.pack(fill="x")
+        folders.columnconfigure(0, weight=1)
+        ttk.Label(folders, text="REQUIRED", style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        # left padding 17: the optional panel's 14 plus its 3-pixel edge, so both columns line up
+        self.required_box = ttk.Frame(folders, style="Card.TFrame", padding=(17, 8, 14, 8))
+        self.required_box.grid(row=1, column=0, sticky="ew")
+        self.optional_title = ttk.Label(folders, text="OPTIONAL", style="OptionalSection.TLabel")
+        self.optional_title.grid(row=2, column=0, sticky="w", pady=(12, 4))
+        self.optional_panel = tk.Frame(folders, bg=OPTIONAL_ACCENT)
+        self.optional_panel.grid(row=3, column=0, sticky="ew")
+        # the accent shows as a 3-pixel edge on the left of the darker panel
+        self.optional_box = ttk.Frame(self.optional_panel, style="Optional.TFrame", padding=(14, 8))
+        self.optional_box.pack(fill="both", expand=True, padx=(3, 0))
+        for box in (self.required_box, self.optional_box):
+            box.columnconfigure(1, weight=1)
+        self.vars, self.rows = {}, {}
+        for key, _, _ in FIELDS:
             var = tk.StringVar(value=(module if key == "module" and module else settings.get(key) or ""))
             var.trace_add("write", lambda *_, k=key: self.fields_changed(k))
-            note = ttk.Label(box, style="CardHint.TLabel", justify="left", wraplength=600)
-            widgets = [ttk.Label(box, text=label, style="CardField.TLabel", width=20),
-                       ttk.Entry(box, textvariable=var),
-                       ttk.Button(box, text="Browse...", command=lambda k=key, t=kind: self.browse(k, t)),
-                       note]
-            widgets[1].bind("<Return>", lambda _: self.check())
-            widgets[0].grid(row=2 * i, column=0, sticky="w", pady=(6, 0))
-            widgets[1].grid(row=2 * i, column=1, sticky="ew", padx=8, pady=(6, 0))
-            widgets[2].grid(row=2 * i, column=2, pady=(6, 0))
-            note.grid(row=2 * i + 1, column=1, columnspan=2, sticky="w", padx=8, pady=(2, 4))
-            self.vars[key], self.rows[key], self.notes[key] = var, widgets, note
-            self.show_note(key)
-        box.bind("<Configure>", lambda e: [n.configure(wraplength=max(300, e.width - 260))
-                                           for n in self.notes.values()])
-        bar = ttk.Frame(box, style="Card.TFrame")
-        bar.grid(row=2 * len(FIELDS), column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        self.places = ttk.Label(bar, text="", style="CardHint.TLabel", justify="left", wraplength=700)
+            self.vars[key] = var
+        self.place_fields()
+        folders.bind("<Configure>", lambda e: self.wrap_notes(e.width))
+        bar = ttk.Frame(folders)
+        bar.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.places = ttk.Label(bar, text="", style="Hint.TLabel", justify="left", wraplength=700)
         self.places.pack(side="left")
         self.check_button = ttk.Button(bar, text="Check", style="Accent.TButton", command=self.check)
         self.check_button.pack(side="right")
@@ -300,6 +309,15 @@ class InstallerWindow(object):
         style.configure("CardHint.TLabel", background=CARD, foreground=MUTED)
         style.configure("CardGood.TLabel", background=CARD, foreground=GOOD)
         style.configure("CardBad.TLabel", background=CARD, foreground=BAD)
+        style.configure("OptionalSection.TLabel", font=("Segoe UI", 8, "bold"), foreground=OPTIONAL_ACCENT)
+        style.configure("Optional.TFrame", background=OPTIONAL_CARD)
+        style.configure("OptionalField.TLabel", background=OPTIONAL_CARD, foreground=MUTED,
+                        font=("Segoe UI", 9, "bold"))
+        style.configure("OptionalReason.TLabel", background=OPTIONAL_CARD, foreground=OPTIONAL_ACCENT,
+                        font=("Segoe UI", 9, "italic"))
+        style.configure("OptionalGood.TLabel", background=OPTIONAL_CARD, foreground=GOOD)
+        style.configure("OptionalBad.TLabel", background=OPTIONAL_CARD, foreground=BAD)
+        style.configure("OptionalHint.TLabel", background=OPTIONAL_CARD, foreground=MUTED)
         style.configure("Dialog.TFrame", background=CARD)
         style.configure("Dialog.TLabel", background=CARD, foreground=TEXT)
         style.configure("Dialog.TCheckbutton", background=CARD, foreground=TEXT, indicatorbackground=FIELD,
@@ -392,17 +410,74 @@ class InstallerWindow(object):
         return (chosen["value"], ticked.get()) if option else chosen["value"]
 
     # -- fields ---------------------------------------------------------------
+    def place_fields(self):
+        """Shows the module folder, then the fields the module's manifest declares: required ones in the
+        first panel, optional ones in the second with the reason the manifest gives."""
+        needs, reasons = module_fields(self.values()["module"])
+        for key in [k for k in self.rows if k != "module"]:
+            for w in self.rows.pop(key)["widgets"]:
+                w.destroy()
+        rows = {"required": 1, "optional": 0}
+        if "module" not in self.rows:
+            self.add_row("module", self.required_box, 0, None)
+        for key, _, _ in FIELDS[1:]:
+            need = needs.get(key)
+            if need:
+                box = self.required_box if need == "required" else self.optional_box
+                self.add_row(key, box, rows[need], reasons.get(key))
+                rows[need] += 1
+        for w in (self.optional_title, self.optional_panel):
+            if rows["optional"]:
+                w.grid()
+            else:
+                w.grid_remove()
+
+    def add_row(self, key, box, index, reason):
+        """One field in box, at row index: label, entry and button, then the reason (optional field)
+        and a line saying whether the path fits."""
+        label, kind = [(l, k) for f, l, k in FIELDS if f == key][0]
+        optional = reason is not None
+        prefix = "Optional" if optional else "Card"
+        widgets = [ttk.Label(box, text=label, style=prefix + "Field.TLabel", width=20),
+                   ttk.Entry(box, textvariable=self.vars[key]),
+                   ttk.Button(box, text="Browse...", command=lambda: self.browse(key, kind))]
+        widgets[1].bind("<Return>", lambda _: self.check())
+        widgets[0].grid(row=3 * index, column=0, sticky="w", pady=(6, 0))
+        widgets[1].grid(row=3 * index, column=1, sticky="ew", padx=8, pady=(6, 0))
+        widgets[2].grid(row=3 * index, column=2, pady=(6, 0))
+        if optional:
+            text = ttk.Label(box, text=reason, style="OptionalReason.TLabel", justify="left", wraplength=600)
+            text.grid(row=3 * index + 1, column=1, columnspan=2, sticky="w", padx=8, pady=(2, 0))
+            widgets.append(text)
+        note = ttk.Label(box, justify="left", wraplength=600)
+        note.grid(row=3 * index + 2, column=1, columnspan=2, sticky="w", padx=8, pady=(2, 2))
+        widgets.append(note)
+        self.rows[key] = {"widgets": widgets, "note": note, "optional": optional}
+        self.show_note(key)
+
+    def wrap_notes(self, width):
+        for row in self.rows.values():
+            for w in row["widgets"][3:]:
+                w.configure(wraplength=max(300, width - 260))
+
     def show_note(self, key):
-        optional = key == "server" and module_needs(self.values()["module"])[1]
-        ok, text = field_state(key, self.values()[key], optional)
-        self.notes[key].configure(text=("✓ " if ok else "✗ " if ok is False else "") + text,
-                                  style="CardGood.TLabel" if ok else "CardBad.TLabel" if ok is False
-                                  else "CardHint.TLabel")
+        row = self.rows.get(key)
+        if not row:
+            return
+        ok, text = field_state(key, self.values()[key])
+        prefix = "Optional" if row["optional"] else "Card"
+        # An empty optional field says nothing more than its reason.
+        if ok is None and row["optional"]:
+            row["note"].grid_remove()
+            return
+        row["note"].grid()
+        row["note"].configure(text=("✓ " if ok else "✗ " if ok is False else "") + text,
+                              style=prefix + ("Good" if ok else "Bad" if ok is False else "Hint") + ".TLabel")
 
     def browse(self, key, kind):
         current = self.vars[key].get().strip()
         start = current if os.path.isdir(current) else os.path.dirname(current) if current else ""
-        label = dict((k, l) for k, l, _, _ in FIELDS)[key]
+        label = dict((k, l) for k, l, _ in FIELDS)[key]
         if kind == "folder":
             path = filedialog.askdirectory(parent=self.root, initialdir=start, mustexist=True,
                                            title="%s: %s" % (label, EMPTY[key].split(" (")[0]))
@@ -415,9 +490,11 @@ class InstallerWindow(object):
                 self.check()
 
     def fields_changed(self, key):
+        if not hasattr(self, "required_box"):
+            return
+        if key == "module":
+            self.place_fields()
         self.show_note(key)
-        if key == "module" and "server" in self.notes:
-            self.show_note("server")
         if self.filling or self.working:
             return
         self.context = None
@@ -429,26 +506,19 @@ class InstallerWindow(object):
         return {key: var.get().strip().strip('"') for key, var in self.vars.items()}
 
     def ready(self, quiet=False):
-        """True if the fields needed for a check hold the expected paths; otherwise says which one is wrong."""
-        server_module, optional, database = module_needs(self.values()["module"])
-        for key, label, _, used_by in FIELDS:
-            if not field_used(used_by, server_module, database):
+        """True if the fields shown hold the expected paths (a required field filled, unless the installer
+        finds it by itself); otherwise says which one is wrong."""
+        for key, label, _ in FIELDS:
+            row = self.rows.get(key)
+            if not row:
                 continue
             ok = field_state(key, self.values()[key])[0]
-            needed = key in ("module", "client") or (key == "server" and not optional)
+            needed = not row["optional"] and key not in FOUND_BY_ITSELF
             if ok is False or (needed and ok is None):
                 if not quiet:
                     self.show_state("unknown", "", "%s: %s" % (label, field_state(key, self.values()[key])[1]))
                 return False
         return True
-
-    def show_rows(self, server_module, database):
-        for key, _, _, used_by in FIELDS:
-            for w in self.rows[key]:
-                if field_used(used_by, server_module, database):
-                    w.grid()
-                else:
-                    w.grid_remove()
 
     # -- background work ------------------------------------------------------
     def work(self, text, job, done):
@@ -517,15 +587,14 @@ class InstallerWindow(object):
         def job():
             M = self.load_manifest(core.module_folder(v["module"]))
             server = core.open_server(M, v["server"], v["sources"])
-            client = core.Client(v["client"])
+            client = core.Client(v["client"]) if "game" in M.fields else None
             dbs = {}
             if core.uses_databases(M, server):
                 dbs = core.open_databases(server, v["mysql"] or core.find_mysql(server, self.settings))
             core.check_package_place(M, server)
             return M, server, client, dbs, core.survey(M, server, client, dbs)
 
-        self.show_state("busy", self.module_title.cget("text"), "Reading the server, the game archives and "
-                                                                "the database...")
+        self.show_state("busy", self.module_title.cget("text"), "Reading the folders...")
         self.work("Checking...", job, self.checked)
 
     def checked(self, context):
@@ -538,31 +607,29 @@ class InstallerWindow(object):
         if dbs:
             self.vars["mysql"].set(dbs["world"].mysql)
         self.filling = False
-        self.show_rows(M.server_module, bool(M.databases))
         core.remember(self.settings, M, server, client, dbs)
         if server is None:
-            self.places.configure(text="No worldserver folder: only the game part is looked at.")
+            self.places.configure(text="")
         else:
             # Where the worldserver keeps its files, relative to its folder when inside it.
-            self.places.configure(text="Found from the worldserver folder:  " + "  \u00b7  ".join(
+            self.places.configure(text="From the worldserver folder:  " + "  \u00b7  ".join(
                 "%s: %s" % (label, os.path.relpath(path, server.bin)
                            if label != "databases" and core.is_inside(path, server.bin) else path)
-                for label, path in core.folder_lines(M, server, client, dbs)[1:] if label not in ("sources", "game")))
+                for label, path in core.folder_lines(M, server, client, dbs)
+                if label not in ("worldserver", "sources", "game")))
         self.fill_tree(state, client)
         title = "%s  (%s)" % (M.title, M.name) if M.title != M.name else M.name
         if state.strong():
-            self.show_state("present", title, "The module is present, in whole or in part. Remove takes away "
-                                              "everything that is left of it: %s." % removal_parts(M, dbs), "remove")
+            self.show_state("present", title, "Installed, in whole or in part. Remove takes away what is left: %s."
+                            % removal_parts(M, dbs), "remove")
         elif state.weak():
-            self.show_state("conflict", title, "These items carry the module's identifiers, but nothing proves "
-                                               "they are its own: the module cannot be installed while they are "
-                                               "there. If they are leftovers of an installation of this module, "
-                                               "Remove leftovers takes away their database and DBC rows (never "
-                                               "a game file). If they belong to something else, the identifiers "
-                                               "of one of the two have to change.", "leftovers")
+            self.show_state("conflict", title, "The items below carry the module's identifiers without proof they "
+                                               "are its own: no install while they are there. If they are leftovers "
+                                               "of this module, Remove leftovers takes away their database and DBC "
+                                               "rows (never a game file).", "leftovers")
         else:
-            self.show_state("absent", title, "No trace of the module. Install puts it in place: %s."
-                            % install_parts(M, server), "install")
+            self.show_state("absent", title, "Not installed. Install puts in place: %s."
+                            % install_parts(M, server, client), "install")
         self.write_log("%s: %s" % (M.name, {"remove": "present", "leftovers": "conflict",
                                             "install": "not installed"}[self.action]))
 
@@ -570,8 +637,8 @@ class InstallerWindow(object):
         self.tree.delete(*self.tree.get_children())
         groups = [("Traces of the module", state.lines(), ""),
                   ("Carry its identifiers without being proven its own", state.conflict_lines(), "conflict"),
-                  ("Archives that could not be read", [("archive", "%s (%s)" % u) for u in client.unreadable],
-                   "conflict")]
+                  ("Archives that could not be read",
+                   [("archive", "%s (%s)" % u) for u in (client.unreadable if client else [])], "conflict")]
         shown = False
         for name, lines, tag in groups:
             if not lines:
@@ -604,14 +671,14 @@ class InstallerWindow(object):
             ", ".join("%s (%s)" % (os.path.basename(p), core.size_text(n)) for p, n in archives)) \
             if archives else None
         if action == "install":
-            if M.server_module:
-                where = "the server sources, its configuration and Lua scripts, the game archives (MPQ)" \
-                        + (" and the server DBC files" if any(d.server is not None for d in M.dbc) else "")
-            elif server is not None and core.has_server_part(M):
-                where = "the game archives (MPQ), Interface\\AddOns, the server DBC files" \
-                        + (" and the databases" if M.databases else "")
-            else:
-                where = "the game archives (MPQ) and Interface\\AddOns"
+            parts = ["the server sources, its configuration and Lua scripts"] if M.server_module else []
+            if client is not None:
+                parts.append("the game archives (MPQ)" + (", Interface\\AddOns" if M.addons else ""))
+            if server is not None and any(d.server is not None for d in M.dbc):
+                parts.append("the server DBC files")
+            if dbs and not M.server_module:
+                parts.append("the databases")
+            where = ", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else parts[0]
             text = "The installer writes into %s.%s" % (
                 where, "\n\nThe server must be rebuilt afterwards." if M.server_module else "")
             if refusals:
@@ -635,7 +702,7 @@ class InstallerWindow(object):
 
         def job():
             # Read again: the state may have changed since the check.
-            fresh = core.survey(M, server, core.Client(client.folder), dbs)
+            fresh = core.survey(M, server, core.Client(client.folder) if client else None, dbs)
             now = "remove" if fresh.strong() else "leftovers" if fresh.weak() else "install"
             if now != action:
                 raise core.InstallerError("the state changed since the check: check again")
