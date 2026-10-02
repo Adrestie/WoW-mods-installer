@@ -17,6 +17,7 @@ Paths inside the package are relative to the module folder, with `/`.
 | `title` | no | display name |
 | `server_module` | no | `false`: a package without server module, see below (`true` by default) |
 | `fields` | yes | the folders the module needs, required or optional, see below |
+| `optional-notes` | when a field is optional | what the optional fields add to the module, see below |
 | `signature` | yes, unless `server_module` is `false` | package files that identify the module: a folder of `modules/` that contains all of them is the module, whatever its name |
 | `exclude_from_sources` | no | package folders or files not copied into `modules/` (client data, for instance); `.git` and `__pycache__` never are |
 | `configuration` | no | the module's `.conf`, see below |
@@ -46,9 +47,13 @@ The AzerothCore module loader must be named after the folder:
 ```json
 "fields": {
   "game": "required",
-  "worldserver": { "optional": "Only if you run the server: adds 18 statistics. Leave empty if you only play." },
-  "mysql": { "optional": "Only with the worldserver folder. Found by itself when left empty." }
-}
+  "worldserver": { "optional": "Only if you run the server. Leave empty if you only play." },
+  "mysql": { "optional": "Only if you run the server. Found by itself when left empty." }
+},
+"optional-notes": [
+  "The server part adds to the Statistics tab 18 statistics that 3.3.5 does not track.",
+  "If you only play, leave these fields empty."
+]
 ```
 
 The folders the module needs besides its own: `game` (the folder of
@@ -58,6 +63,10 @@ AzerothCore sources) and `mysql` (`mysql.exe`). Each is `"required"`, or
 optional ones in another, each with its reason. A field left out is of no use
 to the module: the window does not show it, and the installer does not read
 it.
+
+`optional-notes`, a text or a list of texts, says what the optional fields add
+to the module; the window shows it at the top of the optional panel. It is
+required when a field is optional, and refused when none is.
 
 Each field must match the rest of the manifest, or the manifest is refused:
 

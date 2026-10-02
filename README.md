@@ -12,8 +12,9 @@ Download `installer.exe` once, from the
 [releases](https://github.com/Adrestie/WoW-mods-installer/releases), then run it, or drop a module folder (the one
 that contains `installer.json`) on it. Its window holds the module folder,
 then the folders that module's manifest asks for: the required ones in one
-panel, the optional ones in another, each with the reason it is optional. A
-folder the module does not use is not shown. The AzerothCore sources and
+panel, the optional ones in another, under what they add to the module and
+each with the reason it is optional. A folder the module does not use is not
+shown. The AzerothCore sources and
 `mysql.exe` are found by themselves when left empty. Under each field, a line
 says whether the path given is the expected one. It remembers them in
 `%APPDATA%\WoW-mods\installer-settings.json`. **Check** reads the server, the

@@ -336,6 +336,19 @@ def _fields(entry, M):
     return fields, reasons
 
 
+def _optional_notes(entry, reasons):
+    """[texts]: what the optional fields add, shown above them; required when a field is optional,
+    refused otherwise. reasons: {field: why it is optional}."""
+    if not reasons:
+        if entry is not None:
+            _error("optional-notes", "no field is optional: nothing to explain, leave it out")
+        return []
+    notes = [entry] if isinstance(entry, str) else entry
+    if not isinstance(notes, list) or not notes or not all(isinstance(n, str) and n.strip() for n in notes):
+        _error("optional-notes", "what the optional fields add to the module: a text, or a list of texts")
+    return [n.strip() for n in notes]
+
+
 def load(root):
     """The Module described by root/installer.json."""
     path = os.path.join(root, MANIFEST_NAME)
@@ -391,6 +404,7 @@ def load(root):
                                    "the rows it adds, so that removal deletes them" % (key, key))
     M.shared = _shared(M.root, M, m.get("shared"))
     M.fields, M.reasons = _fields(m.get("fields"), M)
+    M.optional_notes = _optional_notes(m.get("optional-notes"), M.reasons)
     M.worldserver_optional = M.fields.get("worldserver") == "optional"
     missing = [p for p in list(M.signature) + ([M.conf["template"]] if M.conf else [])
                if not os.path.isfile(os.path.join(M.root, p))]

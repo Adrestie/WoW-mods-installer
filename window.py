@@ -111,13 +111,16 @@ def field_state(key, path):
 
 
 def module_fields(path):
-    """({field key: "required" or "optional"}, {field key: why it is optional}) from the "fields" of the
-    module's manifest, by settings key; ({}, {}) while it cannot be read."""
+    """({field key: "required" or "optional"}, {field key: why it is optional}, [optional notes]) from
+    the "fields" and "optional-notes" of the module's manifest, by settings key; ({}, {}, []) while it
+    cannot be read."""
     try:
         with open(os.path.join(core.module_folder(path) or "", core.MANIFEST_NAME), encoding="utf-8") as f:
-            declared = json.load(f).get("fields") or {}
+            m = json.load(f)
+        declared = m.get("fields") or {}
+        notes = m.get("optional-notes") or []
     except (OSError, ValueError, AttributeError):
-        return {}, {}
+        return {}, {}, []
     needs, reasons = {}, {}
     for key, name in MANIFEST_FIELD.items():
         v = declared.get(name)
@@ -125,7 +128,8 @@ def module_fields(path):
             needs[key] = "required"
         elif isinstance(v, dict) and isinstance(v.get("optional"), str):
             needs[key], reasons[key] = "optional", v["optional"]
-    return needs, reasons
+    notes = [notes] if isinstance(notes, str) else [n for n in notes if isinstance(n, str)]
+    return needs, reasons, notes
 
 
 def install_parts(M, server, client):
@@ -218,6 +222,7 @@ class InstallerWindow(object):
         for box in (self.required_box, self.optional_box):
             box.columnconfigure(1, weight=1)
         self.vars, self.rows = {}, {}
+        self.notes_frame = None       # what the optional fields add, at the top of their panel
         for key, _, _ in FIELDS:
             var = tk.StringVar(value=(module if key == "module" and module else settings.get(key) or ""))
             var.trace_add("write", lambda *_, k=key: self.fields_changed(k))
@@ -315,6 +320,7 @@ class InstallerWindow(object):
                         font=("Segoe UI", 9, "bold"))
         style.configure("OptionalReason.TLabel", background=OPTIONAL_CARD, foreground=OPTIONAL_ACCENT,
                         font=("Segoe UI", 9, "italic"))
+        style.configure("OptionalNote.TLabel", background=OPTIONAL_CARD, foreground=TEXT)
         style.configure("OptionalGood.TLabel", background=OPTIONAL_CARD, foreground=GOOD)
         style.configure("OptionalBad.TLabel", background=OPTIONAL_CARD, foreground=BAD)
         style.configure("OptionalHint.TLabel", background=OPTIONAL_CARD, foreground=MUTED)
@@ -412,12 +418,26 @@ class InstallerWindow(object):
     # -- fields ---------------------------------------------------------------
     def place_fields(self):
         """Shows the module folder, then the fields the module's manifest declares: required ones in the
-        first panel, optional ones in the second with the reason the manifest gives."""
-        needs, reasons = module_fields(self.values()["module"])
+        first panel; in the second, what the optional fields add, then each with its reason."""
+        needs, reasons, notes = module_fields(self.values()["module"])
         for key in [k for k in self.rows if k != "module"]:
             for w in self.rows.pop(key)["widgets"]:
                 w.destroy()
-        rows = {"required": 1, "optional": 0}
+        if self.notes_frame is not None:
+            self.notes_frame.destroy()
+            self.notes_frame = None
+        if notes:
+            # one line per note, a bullet before each when there are several, wrapped text aligned
+            self.notes_frame = ttk.Frame(self.optional_box, style="Optional.TFrame")
+            self.notes_frame.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+            self.notes_frame.columnconfigure(1, weight=1)
+            for i, note in enumerate(notes):
+                if len(notes) > 1:
+                    ttk.Label(self.notes_frame, text="•", style="OptionalNote.TLabel").grid(
+                        row=i, column=0, sticky="nw", padx=(0, 6))
+                ttk.Label(self.notes_frame, text=note, style="OptionalNote.TLabel", justify="left",
+                          wraplength=700).grid(row=i, column=1, sticky="w")
+        rows = {"required": 1, "optional": 1}
         if "module" not in self.rows:
             self.add_row("module", self.required_box, 0, None)
         for key, _, _ in FIELDS[1:]:
@@ -427,7 +447,7 @@ class InstallerWindow(object):
                 self.add_row(key, box, rows[need], reasons.get(key))
                 rows[need] += 1
         for w in (self.optional_title, self.optional_panel):
-            if rows["optional"]:
+            if rows["optional"] > 1:
                 w.grid()
             else:
                 w.grid_remove()
@@ -459,6 +479,9 @@ class InstallerWindow(object):
         for row in self.rows.values():
             for w in row["widgets"][3:]:
                 w.configure(wraplength=max(300, width - 260))
+        if self.notes_frame is not None:
+            for w in self.notes_frame.grid_slaves(column=1):
+                w.configure(wraplength=max(300, width - 80))
 
     def show_note(self, key):
         row = self.rows.get(key)
