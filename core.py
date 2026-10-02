@@ -912,9 +912,14 @@ def installed_dbc(M, server):
 
 
 def uses_databases(M, server):
-    """True when the run reads and writes the databases: a server module, or a package for the game
-    with database rows, run with a worldserver folder."""
-    return M.server_module or (server is not None and bool(M.databases))
+    """True when the run reads and writes the databases: the manifest declares the MySQL client, and
+    the worldserver folder (which names the databases) is given."""
+    return "mysql" in M.fields and server is not None
+
+
+def has_sql(M):
+    """True when the module carries SQL files (data/sql) for a database."""
+    return any(module_sql_files(M, key) for key in ("world", "characters"))
 
 
 def install_plan(M, client, server):
@@ -1756,6 +1761,8 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
             say("The worldserver reads its DBC files and database rows when it starts.")
         return
     print_build_steps(server)
+    if not has_sql(M):
+        return
     if server.updates_mask & 6 == 6:
         say("On first start, the core updater applies the module's SQL.")
     else:

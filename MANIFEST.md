@@ -66,7 +66,7 @@ Each field must match the rest of the manifest, or the manifest is refused:
 | `game` | the module has `game_files`, `addons` or client DBC rows | never |
 | `worldserver` | a server module, server DBC rows, or `database` | for a package without server module: left empty, the server part is left out (see below) |
 | `sources` | a server module | never |
-| `mysql` | a server module, or `database` | exactly when `worldserver` is |
+| `mysql` | SQL in `data/sql`, or `database` | exactly when `worldserver` is |
 
 `sources` and `mysql` are found by themselves when left empty (the build
 folder's `CMakeCache.txt`; `worldserver.conf`, the PATH, MySQL Server's
@@ -78,8 +78,8 @@ The four kinds of modules:
 |---|---|---|---|---|
 | client only (an addon) | required | | | |
 | server or client (ForeverUI) | required | optional | | optional |
-| server and client | required | required | required | required |
-| server only | | required | required | required |
+| server and client | required | required | required | required, with SQL or `database` |
+| server only | | required | required | required, with SQL or `database` |
 
 ### configuration
 

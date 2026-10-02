@@ -136,9 +136,9 @@ def install_parts(M, server, client):
         parts += (["game files"] if M.game_files else []) + (["addons"] if M.addons else [])
     if core.installed_dbc(M, server):
         parts.append("DBC rows")
-    if M.server_module:
+    if M.server_module and core.has_sql(M):
         parts.append("SQL")
-    elif server is not None and M.databases:
+    elif not M.server_module and server is not None and M.databases:
         parts.append("database rows")
     text = ", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else "".join(parts)
     if M.server_module:
@@ -726,9 +726,10 @@ class InstallerWindow(object):
             title, text = "Installation complete", ""
             if M.server_module:
                 text = "\n".join(core.build_steps(server))
-                text += "\n\n" + ("On first start, the core updater applies the module's SQL."
-                                  if server.updates_mask & 6 == 6 else
-                                  "The installer applied the module's SQL itself (the core updater is off).")
+                if core.has_sql(M):
+                    text += "\n\n" + ("On first start, the core updater applies the module's SQL."
+                                      if server.updates_mask & 6 == 6 else
+                                      "The installer applied the module's SQL itself (the core updater is off).")
             elif server is not None and core.has_server_part(M):
                 text = "The worldserver reads its DBC files and database rows when it starts."
         else:

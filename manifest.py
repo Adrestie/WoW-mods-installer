@@ -318,7 +318,8 @@ def _fields(entry, M):
     needs = {"game": bool(M.game_files or M.addons or any(d.client is not None for d in M.dbc)),
              "worldserver": M.server_module or any(d.server is not None for d in M.dbc) or bool(M.databases),
              "sources": M.server_module,
-             "mysql": M.server_module or bool(M.databases)}
+             # the databases: rows to look for and delete, or SQL the installer may apply itself
+             "mysql": bool(M.databases) or any(module_sql_files(M, k) for k in ("world", "characters"))}
     for k in FIELDS:
         if needs[k] and k not in fields:
             _error("fields", "the module needs the %s field: declare it" % k)
@@ -327,7 +328,7 @@ def _fields(entry, M):
     if fields.get("game") == "optional":
         _error("fields", "game: the game folder cannot be optional")
     if M.server_module:
-        for k in ("worldserver", "sources", "mysql"):
+        for k in [k for k in fields if k != "game"]:
             if fields[k] != "required":
                 _error("fields", "%s: a server module cannot do without it" % k)
     if "mysql" in fields and fields["mysql"] != fields["worldserver"]:
