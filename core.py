@@ -9,9 +9,11 @@ sources (modules/), puts its configuration and Lua scripts in place, adds its
 rows to the server DBC files and writes them, with its game files, directly
 into the game's MPQ archives, and copies its addons into Interface\AddOns.
 The server is then rebuilt; on first start the core updater applies the
-module's SQL. A package without server module (server_module false) only
-writes the game files, the addons and the DBC rows: nothing goes into the
-server's sources, configuration, scripts or databases, and no SQL is run.
+module's SQL. A package without server module (server_module false) writes
+the game files, the addons and the DBC rows, and applies its own SQL: nothing
+goes into the server's sources, configuration or scripts. When its manifest
+makes the worldserver folder optional and it is left empty (a player), only
+the game part goes in: no DBC row that the server also needs, no SQL.
 
 Any trace: it removes everything that is left, wherever it is (sources,
 configuration, Lua scripts anywhere in the scripts folder, server DBC rows,
@@ -837,7 +839,7 @@ def shared_providers(component, server):
 def module_backups(M, server, client):
     found = []
     for suffix in M.backups:
-        for folder in (server.dbc, client.data, client.locale_dir):
+        for folder in (server.dbc if server else None, client.data, client.locale_dir):
             if folder and os.path.isdir(folder):
                 found += [os.path.join(folder, n) for n in sorted(os.listdir(folder))
                           if n.lower().endswith(suffix.lower())]
@@ -896,14 +898,32 @@ def module_files_in(M, a, receipt):
     return sorted(found.values())
 
 
-def install_plan(M, client):
+def has_server_part(M):
+    """True when the package needs the server for some rows: DBC rows written on the server side
+    too, or database rows."""
+    return any(d.server is not None for d in M.dbc) or bool(M.databases)
+
+
+def installed_dbc(M, server):
+    """The DBC entries an install writes: all of them with a worldserver folder; without one (the
+    folder left empty, the manifest allowing it), only those that leave the server alone."""
+    return [d for d in M.dbc if server is not None or d.server is None]
+
+
+def uses_databases(M, server):
+    """True when the run reads and writes the databases: a server module, or a package for the game
+    with database rows, run with a worldserver folder."""
+    return M.server_module or (server is not None and bool(M.databases))
+
+
+def install_plan(M, client, server):
     """{file name: archive}: where an install writes each DBC and game file -- all into the top
     archive (Client.top_archive), a DBC read from where the game reads it. Refused before anything
     is written when that archive has no room left (hash table full, a v1 archive past 4 GB), or
     when the game reads one of the module's DBC files from an archive read after it."""
     top = client.top_archive()
     where, sizes = {}, {}
-    for d in M.dbc:
+    for d in installed_dbc(M, server):
         if d.client is not None:
             name = "DBFilesClient\\" + d.file
             w = client.winner(name)
@@ -926,14 +946,16 @@ def install_plan(M, client):
     return where
 
 
-def install_targets(M, client):
+def install_targets(M, client, server):
     """The archives an install writes into, existing or to be created."""
-    return sorted(set(install_plan(M, client).values()))
+    return sorted(set(install_plan(M, client, server).values()))
 
 
 def survey(M, server, client, dbs):
-    """The State of the module on this server, game and databases."""
+    """The State of the module on this server (None: no worldserver folder), game and databases."""
     s = State()
+    # Only what an install would write can stand in its way.
+    installed = installed_dbc(M, server)
     if M.server_module:
         s.sources = module_source_dirs(M, server)
     s.addons = [d for d in (addon_folder(client, n) for n in M.addons) if os.path.isdir(d)]
@@ -952,7 +974,7 @@ def survey(M, server, client, dbs):
 
     # Server DBC: rows identical to the module's, or same identifier and other content.
     for d in M.dbc:
-        if d.server is None:
+        if d.server is None or server is None:
             continue
         p = os.path.join(server.dbc, d.file)
         if os.path.isfile(p):
@@ -994,13 +1016,13 @@ def survey(M, server, client, dbs):
             others = [i for i in others if i not in named]
             if mine:
                 s.client_dbc.append((path, d.file, mine))
-            if others and path not in strays:
+            if others and path not in strays and d in installed:
                 s.client_conflicts.append((path, d.file, others))
         s.files += [(path, n) for n in module_files_in(M, a, receipt)]
 
     # What the game reads: rows of an official archive with the same identifier
     # (Blizzard's rows) and files provided in another version.
-    for d in M.dbc:
+    for d in installed:
         if d.client is None:
             continue
         name = "DBFilesClient\\" + d.file
@@ -1303,6 +1325,12 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True):
         for c in M.shared:
             remove_shared(c, server, dbs)
 
+    # Without a worldserver folder, the server side was not looked at; game rows that the server
+    # also needs show the module was installed with one.
+    if server is None and any(defs[f].server is not None for _, f, _ in state.client_dbc):
+        say("  The game held rows the server also needs: if the module was installed with a worldserver")
+        say("  folder, run the installer again with it, to remove the server DBC rows and database rows.")
+
 
 def restore_wow_exe(M, client):
     """Turns back on the Wow.exe checks the module's files needed turned off, once no archive the
@@ -1371,8 +1399,9 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
     first change to the game or the server."""
     started = {} if started is None else started
     heading("Installation")
+    installed = installed_dbc(M, server)
     # What must exist before the first write.
-    for d in M.dbc:
+    for d in installed:
         if d.server is not None and not os.path.isfile(os.path.join(server.dbc, d.file)):
             raise InstallerError("%s not found (DataDir of worldserver.conf)" % os.path.join(server.dbc, d.file))
         if d.client is not None and client.winner("DBFilesClient\\" + d.file) is None:
@@ -1385,9 +1414,9 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
 
     # 1. Game: each DBC, as the game reads it, and each game file into the top archive,
     #    with a receipt.
-    where = install_plan(M, client)
+    where = install_plan(M, client, server)
     writes, created, receipts = {}, set(), {}
-    for d in M.dbc:
+    for d in installed:
         if d.client is None:
             continue
         name = "DBFilesClient\\" + d.file
@@ -1441,7 +1470,7 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
             say("  %s: %d game file(s) written" % (target, game_file_count))
 
     # 2. Server DBC.
-    for d in M.dbc:
+    for d in installed:
         if d.server is None:
             continue
         p = os.path.join(server.dbc, d.file)
@@ -1491,6 +1520,15 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
         shutil.copytree(source, destination, ignore=lambda folder, names: [n for n in names if n in NEVER_COPIED])
         say("  copied: %s" % destination)
     if not M.server_module:
+        # No module in the sources: the core updater never sees this SQL, the installer applies it
+        # (only with a worldserver folder, which gives the databases).
+        for key in ("characters", "world"):
+            if key not in dbs:
+                continue
+            for p in module_sql_files(M, key):
+                with open(p, encoding="utf-8") as f:
+                    dbs[key].run(f.read())
+                say("  applied: %s" % os.path.relpath(p, M.root))
         return
 
     # 6. Sources: the package, minus what the manifest excludes.
@@ -1544,7 +1582,7 @@ def set_conf_path(M, server, content):
     return text.encode("utf-8")
 
 
-def missing_after_install(M, server, client):
+def missing_after_install(M, server, client, dbs):
     """What is missing after an install (empty if everything is in place)."""
     missing = []
     if M.server_module:
@@ -1576,7 +1614,7 @@ def missing_after_install(M, server, client):
         there = shared_version(c, d) if os.path.isdir(d) else None
         if there is None or there < shared_version(c, c["source"]):
             missing.append("%s, version %d or newer" % (d, shared_version(c, c["source"])))
-    for dd in M.dbc:
+    for dd in installed_dbc(M, server):
         if dd.server is not None:
             p = os.path.join(server.dbc, dd.file)
             with open(p, "rb") as f:
@@ -1592,6 +1630,16 @@ def missing_after_install(M, server, client):
         with open(source, "rb") as f:
             if w is None or client.open(w).read(name) != f.read():
                 missing.append("%s in the archive the game reads" % name)
+    # The SQL a package for the game applied itself (a server module's waits for the updater).
+    if not M.server_module:
+        for key, desc in sorted(M.databases.items()):
+            if key not in dbs or not module_sql_files(M, key):
+                continue
+            existing = dbs[key].existing_tables([t for t, _ in desc["rows"]])
+            for t, condition in desc["rows"]:
+                if t.lower() not in existing or \
+                        dbs[key].run("SELECT COUNT(*) FROM `%s` WHERE %s;" % (t, condition))[0][0] == "0":
+                    missing.append("rows of %s (database %s)" % (t, dbs[key].name))
     missing += ["Wow.exe: its %s check still on" % check for check, _ in wow_exe_refusals(M, client)]
     return missing
 
@@ -1628,8 +1676,11 @@ def print_build_steps(server):
 
 
 def open_server(M, bin_dir, sources):
-    """The Server of this worldserver folder, with its sources checked when the module needs them."""
+    """The Server of this worldserver folder, with its sources checked when the module needs them;
+    None when the folder is left empty and the manifest makes it optional."""
     if not bin_dir:
+        if M.worldserver_optional:
+            return None
         raise InstallerError("no worldserver folder given")
     server = Server(bin_dir, sources or None)
     if M.server_module and not server.has_valid_sources():
@@ -1658,7 +1709,7 @@ def check_package_place(M, server):
 
 def refuse_while_running(server, client):
     """Nothing is written while the worldserver or the game runs."""
-    ws = running_worldservers(server)
+    ws = running_worldservers(server) if server else []
     if ws:
         raise InstallerError("the worldserver is running (%s): stop it, then run the installer again"
                              % ", ".join(p or n for n, p in ws))
@@ -1681,7 +1732,7 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
         else:
             say("Nothing was changed: the installation stopped before its first write.")
         raise
-    missing = missing_after_install(M, server, Client(client.folder))
+    missing = missing_after_install(M, server, Client(client.folder), dbs)
     heading("Check")
     if missing:
         raise InstallerError("after installation, missing: %s" % "; ".join(missing))
@@ -1689,8 +1740,11 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
     say()
     say("Installation complete.")
     if not M.server_module:
-        if any(d.server is not None for d in M.dbc):
-            say("The worldserver reads its DBC files when it starts.")
+        if has_server_part(M) and server is None:
+            say("Without a worldserver folder, only the game part is in place: the DBC rows and database")
+            say("rows that need the server were left out.")
+        elif has_server_part(M):
+            say("The worldserver reads its DBC files and database rows when it starts.")
         return
     print_build_steps(server)
     if server.updates_mask & 6 == 6:
@@ -1727,10 +1781,12 @@ def run_console(M, args, settings):
     exit code."""
     say("%s - WoW-mods installer" % M.title)
     say("=" * 60)
-    server = open_server(M, args.server or settings.get("server"), args.sources or settings.get("sources"))
+    # --server "" leaves the worldserver folder empty, for a manifest that makes it optional
+    server = open_server(M, args.server if args.server is not None else settings.get("server"),
+                         args.sources or settings.get("sources"))
     client = Client(args.client or settings.get("client") or "")
     dbs = {}
-    if M.server_module:
+    if uses_databases(M, server):
         dbs = open_databases(server, find_mysql(server, settings, args.mysql))
     heading("Folders")
     for label, value in folder_lines(M, server, client, dbs):
@@ -1774,6 +1830,8 @@ def run_console(M, args, settings):
 
 def folder_lines(M, server, client, dbs):
     """[(label, path)] of the places the installer works in."""
+    if server is None:
+        return [("worldserver", "none: the game part only"), ("game", client.folder)]
     lines = [("worldserver", server.bin)]
     if M.server_module:
         lines += [("sources", server.sources), ("configuration", server.module_confs), ("Lua scripts", server.lua)]
@@ -1785,7 +1843,7 @@ def folder_lines(M, server, client, dbs):
 
 def remember(settings, M, server, client, dbs):
     """Keeps the folders that worked, for the next run."""
-    settings.update({"module": M.root, "server": server.bin, "client": client.folder})
+    settings.update({"module": M.root, "server": server.bin if server else "", "client": client.folder})
     if M.server_module:
         settings["sources"] = server.sources
     if dbs:
@@ -1838,7 +1896,8 @@ def main(load_manifest):
     p = argparse.ArgumentParser(description="Installs a module, or removes it if it is present. Without "
                                             "--status or --yes, the installer opens its window.")
     p.add_argument("module", nargs="?", help="module folder (the one that contains %s)" % MANIFEST_NAME)
-    p.add_argument("--server", help="worldserver folder (the one that contains worldserver.exe)")
+    p.add_argument("--server", help="worldserver folder (the one that contains worldserver.exe); \"\" leaves it "
+                                    "empty when the module's manifest makes it optional")
     p.add_argument("--sources", help="AzerothCore sources folder")
     p.add_argument("--client", help="game folder")
     p.add_argument("--mysql", help="path of mysql.exe")

@@ -28,7 +28,10 @@ does goes to the log at the bottom of the window.
   `Interface\AddOns`. The server must then be recompiled; on first start, the
   core updater applies the module's SQL. A package without server module
   (`"server_module": false`) only writes the game files, the addons and the DBC
-  rows: no sources, no configuration, no scripts, no SQL, no rebuild.
+  rows, and applies its own SQL: no sources, no configuration, no scripts, no
+  rebuild. When its manifest makes the worldserver folder optional, a player
+  leaves that field empty: only the game part goes in, without the DBC rows
+  and SQL that need the server.
 - **Any trace of the module**: it REMOVES everything that is left, wherever it
   is, database included (read and cleaned through `mysql.exe`, with the
   credentials of `worldserver.conf`). An uninstall started by hand is finished
@@ -76,7 +79,7 @@ unexpected error).
 | Option | Effect |
 |---|---|
 | `module` | module folder (the one that contains `installer.json`) |
-| `--server DIR` | worldserver folder (the one that contains `worldserver.exe`) |
+| `--server DIR` | worldserver folder (the one that contains `worldserver.exe`); `--server ""` leaves it empty, when the module's manifest makes it optional |
 | `--sources DIR` | AzerothCore sources, when `CMakeCache.txt` does not lead to them |
 | `--client DIR` | game folder (the one that contains `Wow.exe` and `Data`) |
 | `--mysql FILE` | path of `mysql.exe` |

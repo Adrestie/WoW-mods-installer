@@ -45,13 +45,14 @@ ACTIONS = {
     "leftovers": ("Remove leftovers", "Leftovers.TButton", "#c7771f", "#d98a2e"),
 }
 
-# The fields: (key in the settings, label, kind of path, needed only by a server module).
+# The fields: (key in the settings, label, kind of path, used by: "all" modules, "server" modules,
+# or "database" -- server modules and packages with database rows).
 FIELDS = [
-    ("module", "Module folder", "folder", False),
-    ("server", "Worldserver folder", "folder", False),
-    ("sources", "AzerothCore sources", "folder", True),
-    ("client", "Game folder", "folder", False),
-    ("mysql", "MySQL client", "file", True),
+    ("module", "Module folder", "folder", "all"),
+    ("server", "Worldserver folder", "folder", "all"),
+    ("sources", "AzerothCore sources", "folder", "server"),
+    ("client", "Game folder", "folder", "all"),
+    ("mysql", "MySQL client", "file", "database"),
 ]
 # What goes in each field, said while it is empty.
 EMPTY = {
@@ -66,13 +67,17 @@ EMPTY = {
     "mysql": "Leave empty: found by itself (worldserver.conf, the PATH, MySQL Server's bin folder). Otherwise "
              "mysql.exe, in the bin folder of MySQL Server: it reads and cleans the databases.",
 }
+# The worldserver field, empty, when the module's manifest makes it optional.
+EMPTY_OPTIONAL_SERVER = "Leave empty if you only play, on a server you do not run: only the game part is " \
+                        "installed, without the rows that need the server. If you run the server, the folder " \
+                        "that holds worldserver.exe: the server DBC files and the databases are found from it."
 
 
-def field_state(key, path):
+def field_state(key, path, optional=False):
     """(ok, text) of a field's content: ok is None while it is empty, True if the path is the one expected
-    there, False otherwise; text says so, or what goes there."""
+    there, False otherwise; text says so, or what goes there. optional: the module may do without it."""
     if not path:
-        return None, EMPTY[key]
+        return None, EMPTY_OPTIONAL_SERVER if key == "server" and optional else EMPTY[key]
     if key == "module":
         folder = core.module_folder(path)
         if folder:
@@ -110,13 +115,37 @@ def field_state(key, path):
     return False, "Not mysql.exe: choose mysql.exe in the bin folder of MySQL Server."
 
 
-def module_is_server(path):
-    """False when the module's manifest says it is a package for the game only."""
+def module_needs(path):
+    """(server module, worldserver folder optional, database rows) as the module's manifest says;
+    (True, False, True) when it cannot be read."""
     try:
         with open(os.path.join(core.module_folder(path) or "", core.MANIFEST_NAME), encoding="utf-8") as f:
-            return json.load(f).get("server_module", True) is not False
+            m = json.load(f)
+        return m.get("server_module", True) is not False, m.get("worldserver") == "optional", "database" in m
     except (OSError, ValueError, AttributeError):
-        return True
+        return True, False, True
+
+
+def field_used(used_by, server_module, database):
+    """True if a field whose FIELDS entry says used_by matters for this module."""
+    return used_by == "all" or server_module or (used_by == "database" and database)
+
+
+def install_parts(M, server):
+    """What an install puts in place, in words."""
+    if M.server_module:
+        return "sources, configuration, Lua scripts, DBC rows and game files; the server is rebuilt afterwards"
+    if server is None and core.has_server_part(M):
+        return "game files and addons only: without a worldserver folder, the DBC rows and database rows that " \
+               "need the server are left out"
+    return "game files, addons and DBC rows" + (", and database rows" if server is not None and M.databases else "")
+
+
+def removal_parts(M, dbs):
+    """What a removal takes away, in words."""
+    if M.server_module:
+        return "files, DBC rows and database data, players' data included"
+    return "game files, addons and DBC rows" + (", and database rows" if dbs else "")
 
 
 def dark_title_bar(window):
@@ -364,7 +393,8 @@ class InstallerWindow(object):
 
     # -- fields ---------------------------------------------------------------
     def show_note(self, key):
-        ok, text = field_state(key, self.values()[key])
+        optional = key == "server" and module_needs(self.values()["module"])[1]
+        ok, text = field_state(key, self.values()[key], optional)
         self.notes[key].configure(text=("✓ " if ok else "✗ " if ok is False else "") + text,
                                   style="CardGood.TLabel" if ok else "CardBad.TLabel" if ok is False
                                   else "CardHint.TLabel")
@@ -386,6 +416,8 @@ class InstallerWindow(object):
 
     def fields_changed(self, key):
         self.show_note(key)
+        if key == "module" and "server" in self.notes:
+            self.show_note("server")
         if self.filling or self.working:
             return
         self.context = None
@@ -398,25 +430,25 @@ class InstallerWindow(object):
 
     def ready(self, quiet=False):
         """True if the fields needed for a check hold the expected paths; otherwise says which one is wrong."""
-        server_module = module_is_server(self.values()["module"])
-        for key, label, _, server_only in FIELDS:
-            if server_only and not server_module:
+        server_module, optional, database = module_needs(self.values()["module"])
+        for key, label, _, used_by in FIELDS:
+            if not field_used(used_by, server_module, database):
                 continue
             ok = field_state(key, self.values()[key])[0]
-            needed = key in ("module", "server", "client")
+            needed = key in ("module", "client") or (key == "server" and not optional)
             if ok is False or (needed and ok is None):
                 if not quiet:
                     self.show_state("unknown", "", "%s: %s" % (label, field_state(key, self.values()[key])[1]))
                 return False
         return True
 
-    def show_rows(self, server_module):
-        for key, _, _, server_only in FIELDS:
+    def show_rows(self, server_module, database):
+        for key, _, _, used_by in FIELDS:
             for w in self.rows[key]:
-                if server_only and not server_module:
-                    w.grid_remove()
-                else:
+                if field_used(used_by, server_module, database):
                     w.grid()
+                else:
+                    w.grid_remove()
 
     # -- background work ------------------------------------------------------
     def work(self, text, job, done):
@@ -487,7 +519,7 @@ class InstallerWindow(object):
             server = core.open_server(M, v["server"], v["sources"])
             client = core.Client(v["client"])
             dbs = {}
-            if M.server_module:
+            if core.uses_databases(M, server):
                 dbs = core.open_databases(server, v["mysql"] or core.find_mysql(server, self.settings))
             core.check_package_place(M, server)
             return M, server, client, dbs, core.survey(M, server, client, dbs)
@@ -503,22 +535,24 @@ class InstallerWindow(object):
         self.vars["module"].set(M.root)
         if M.server_module:
             self.vars["sources"].set(server.sources)
+        if dbs:
             self.vars["mysql"].set(dbs["world"].mysql)
         self.filling = False
-        self.show_rows(M.server_module)
+        self.show_rows(M.server_module, bool(M.databases))
         core.remember(self.settings, M, server, client, dbs)
-        # Where the worldserver keeps its files, relative to its folder when inside it.
-        self.places.configure(text="Found from the worldserver folder:  " + "  \u00b7  ".join(
-            "%s: %s" % (label, os.path.relpath(path, server.bin)
-                       if label != "databases" and core.is_inside(path, server.bin) else path)
-            for label, path in core.folder_lines(M, server, client, dbs)[1:] if label not in ("sources", "game")))
+        if server is None:
+            self.places.configure(text="No worldserver folder: only the game part is looked at.")
+        else:
+            # Where the worldserver keeps its files, relative to its folder when inside it.
+            self.places.configure(text="Found from the worldserver folder:  " + "  \u00b7  ".join(
+                "%s: %s" % (label, os.path.relpath(path, server.bin)
+                           if label != "databases" and core.is_inside(path, server.bin) else path)
+                for label, path in core.folder_lines(M, server, client, dbs)[1:] if label not in ("sources", "game")))
         self.fill_tree(state, client)
         title = "%s  (%s)" % (M.title, M.name) if M.title != M.name else M.name
         if state.strong():
-            what = "files, DBC rows and database data, players' data included" if M.server_module \
-                else "game files, addons and DBC rows"
             self.show_state("present", title, "The module is present, in whole or in part. Remove takes away "
-                                              "everything that is left of it: %s." % what, "remove")
+                                              "everything that is left of it: %s." % removal_parts(M, dbs), "remove")
         elif state.weak():
             self.show_state("conflict", title, "These items carry the module's identifiers, but nothing proves "
                                                "they are its own: the module cannot be installed while they are "
@@ -527,9 +561,8 @@ class InstallerWindow(object):
                                                "a game file). If they belong to something else, the identifiers "
                                                "of one of the two have to change.", "leftovers")
         else:
-            self.show_state("absent", title, "No trace of the module. Install puts it in place: %s." % (
-                "sources, configuration, Lua scripts, DBC rows and game files; the server is rebuilt afterwards"
-                if M.server_module else "game files, addons and DBC rows"), "install")
+            self.show_state("absent", title, "No trace of the module. Install puts it in place: %s."
+                            % install_parts(M, server), "install")
         self.write_log("%s: %s" % (M.name, {"remove": "present", "leftovers": "conflict",
                                             "install": "not installed"}[self.action]))
 
@@ -563,7 +596,7 @@ class InstallerWindow(object):
                         + core.refusal_text(client, refusals)[1:] + ".", [("Close", None, "TButton")], kind="error")
             return
         # The existing archives about to change, offered for a backup.
-        changing = core.install_targets(M, client) if action == "install" \
+        changing = core.install_targets(M, client, server) if action == "install" \
             else sorted(core.removal_plan(M, state, action == "leftovers"))
         archives = core.archives_to_back_up(changing)
         option = "Back up first the archive%s about to change: %s" % (
@@ -571,9 +604,14 @@ class InstallerWindow(object):
             ", ".join("%s (%s)" % (os.path.basename(p), core.size_text(n)) for p, n in archives)) \
             if archives else None
         if action == "install":
-            where = ("the server sources, its configuration and Lua scripts, the game archives (MPQ)"
-                     + (" and the server DBC files" if any(d.server is not None for d in M.dbc) else "")
-                     if M.server_module else "the game archives (MPQ) and Interface\\AddOns")
+            if M.server_module:
+                where = "the server sources, its configuration and Lua scripts, the game archives (MPQ)" \
+                        + (" and the server DBC files" if any(d.server is not None for d in M.dbc) else "")
+            elif server is not None and core.has_server_part(M):
+                where = "the game archives (MPQ), Interface\\AddOns, the server DBC files" \
+                        + (" and the databases" if M.databases else "")
+            else:
+                where = "the game archives (MPQ) and Interface\\AddOns"
             text = "The installer writes into %s.%s" % (
                 where, "\n\nThe server must be rebuilt afterwards." if M.server_module else "")
             if refusals:
@@ -583,8 +621,7 @@ class InstallerWindow(object):
                                    ACTIONS["install"][1]), cancel], option=option)
         elif action == "remove":
             answer = self.dialog("Remove %s?" % M.title, "Everything that is left of it goes: %s.\n\nThis cannot "
-                                 "be undone." % ("files, DBC rows and database data, players' data included"
-                                                 if M.server_module else "game files, addons and DBC rows"),
+                                 "be undone." % removal_parts(M, dbs),
                                  [("Remove", True, ACTIONS["remove"][1]), cancel], kind="warning", focus=1,
                                  option=option)
         else:
@@ -625,6 +662,8 @@ class InstallerWindow(object):
                 text += "\n\n" + ("On first start, the core updater applies the module's SQL."
                                   if server.updates_mask & 6 == 6 else
                                   "The installer applied the module's SQL itself (the core updater is off).")
+            elif server is not None and core.has_server_part(M):
+                text = "The worldserver reads its DBC files and database rows when it starts."
         else:
             title = "Uninstallation complete" if action == "remove" else "Leftovers removed"
             text = "\n".join(core.build_steps(server)) if M.server_module else ""

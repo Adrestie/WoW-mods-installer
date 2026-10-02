@@ -10,7 +10,7 @@ import json
 import os
 import re
 
-from core import InstallerError, MANIFEST_NAME, dbc_split, read_version, row_values, sql_list
+from core import InstallerError, MANIFEST_NAME, dbc_split, module_sql_files, read_version, row_values, sql_list
 
 FORMAT = "wow-mods-installer/1"
 
@@ -311,16 +311,23 @@ def load(root):
     if not isinstance(M.name, str) or not re.match(r"^[A-Za-z0-9_.-]+$", M.name):
         _error("module", "the name of the module folder in modules/")
     M.title = m.get("title") or M.name
-    # server_module false: a package for the game only (plus the server DBC rows); nothing goes
-    # into the server's sources, configuration, scripts or databases
+    # server_module false: a package for the game, plus a server part (server DBC rows, database
+    # rows); nothing goes into the server's sources, configuration or scripts
     M.server_module = m.get("server_module", True)
     if not isinstance(M.server_module, bool):
         _error("server_module", "true or false")
     if not M.server_module:
-        server_keys = [k for k in ("signature", "exclude_from_sources", "configuration", "lua", "database",
-                                   "shared") if k in m]
+        server_keys = [k for k in ("signature", "exclude_from_sources", "configuration", "lua", "shared") if k in m]
         if server_keys:
             _error(server_keys[0], "a package without server module has no %s" % ", ".join(server_keys))
+    # worldserver "optional": the worldserver folder may be left empty (a player), and the server
+    # part is then left out
+    worldserver = m.get("worldserver", "required")
+    if worldserver not in ("required", "optional"):
+        _error("worldserver", '"required" or "optional"')
+    if worldserver == "optional" and M.server_module:
+        _error("worldserver", "a server module needs the worldserver folder")
+    M.worldserver_optional = worldserver == "optional"
     M.signature = m.get("signature") or []
     if M.server_module and not M.signature:
         _error("signature", "at least one file that identifies the module in modules/")
@@ -340,6 +347,14 @@ def load(root):
     M.addons = _addons(M.root, m.get("addons"))
     M.backups = list(m.get("backups", []))
     M.databases = _databases(M.root, M, m.get("database"))
+    if not M.server_module:
+        if any(d["tables"] or d["before"] for d in M.databases.values()):
+            _error("database", 'a package without server module holds "rows" only')
+        # The installer applies this SQL itself: removal must know the rows it adds.
+        for key in ("world", "characters"):
+            if module_sql_files(M, key) and not M.databases.get(key, {}).get("rows"):
+                _error("database", "data/sql holds SQL for the %s database: declare in database.%s.rows "
+                                   "the rows it adds, so that removal deletes them" % (key, key))
     M.shared = _shared(M.root, M, m.get("shared"))
     missing = [p for p in list(M.signature) + ([M.conf["template"]] if M.conf else [])
                if not os.path.isfile(os.path.join(M.root, p))]

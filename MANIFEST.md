@@ -16,6 +16,7 @@ Paths inside the package are relative to the module folder, with `/`.
 | `module` | yes | name of the module folder under `modules/` in the server sources (letters, digits, `_`, `.`, `-`); the name its receipts carry |
 | `title` | no | display name |
 | `server_module` | no | `false`: a package without server module, see below (`true` by default) |
+| `worldserver` | no | `"required"` (default): the worldserver folder must be given; `"optional"`: it may be left empty, see below (refused for a server module) |
 | `signature` | yes, unless `server_module` is `false` | package files that identify the module: a folder of `modules/` that contains all of them is the module, whatever its name |
 | `exclude_from_sources` | no | package folders or files not copied into `modules/` (client data, for instance); `.git` and `__pycache__` never are |
 | `configuration` | no | the module's `.conf`, see below |
@@ -34,6 +35,8 @@ the core updater applies on the next start, sorted by file name. When
 `Updates.EnableDatabases` in `worldserver.conf` disables the updater for a
 database, the installer applies them itself, in the same order. The updater
 records files by name only: prefix every SQL file name with the module name.
+A package without server module has no module for the updater: the installer
+always applies its SQL itself.
 
 The AzerothCore module loader must be named after the folder:
 `Add<module, with - replaced by _>Scripts`.
@@ -167,14 +170,25 @@ removal the folder is deleted.
 
 ### Package without server module
 
-With `"server_module": false`, the package is for the game only: the
-installer writes its game files and its addons, and adds its DBC rows (game
-side, and server side for the entries whose `server` is set). Nothing goes into
-the server's sources, configuration, Lua scripts or databases, no SQL is run,
-and the server needs no rebuild; the sources folder and `mysql.exe` are not
-asked. `signature`, `exclude_from_sources`, `configuration`, `lua` and
-`database` are refused. The worldserver folder is still asked: it gives the
-server DBC folder, and nothing is written while the worldserver runs.
+With `"server_module": false`, the package is for the game, with a server
+part: the installer writes its game files and its addons, adds its DBC rows
+(game side, and server side for the entries whose `server` is set), and
+applies its SQL itself. Nothing goes into the server's sources, configuration
+or Lua scripts, and the server needs no rebuild; the sources folder is not
+asked, and `mysql.exe` only when there is a `database`. `signature`,
+`exclude_from_sources`, `configuration`, `lua` and `shared` are refused;
+`database` holds `rows` only, and SQL in `data/sql` for a database needs its
+`rows`, so that removal deletes what the SQL adds. The worldserver folder
+gives the server DBC folder and the databases, and nothing is written while
+the worldserver runs.
+
+With `"worldserver": "optional"`, the worldserver folder may be left empty: a
+player who does not run the server. Only the game part then goes in: game
+files, addons, and the DBC entries without a `server` side. The server part
+(DBC entries with a `server` side, on both sides, and the SQL) is left out.
+A removal without the worldserver folder takes what the game holds; when the
+game held rows of the server part, it says to run the installer again with
+the worldserver folder, to remove the server DBC rows and database rows.
 
 ### database
 
