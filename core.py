@@ -1197,6 +1197,25 @@ def survey_game(M, client, s, installed):
                     s.file_conflicts.append((w, name))
 
 
+def conflicting_mods(state, client):
+    """The archives of other mods that hold items in conflict with the module: neither Blizzard's nor
+    one installs write into (other WoW-mods modules live there)."""
+    targets = {os.path.normcase(t) for t, view in client.write_targets()}
+    found = {a for a, n in state.file_conflicts} | {a for a, f, ids in state.client_conflicts}
+    return sorted(p for p in found if not archive_rank(os.path.basename(p))[1] and os.path.normcase(p) not in targets)
+
+
+def disable_archives(paths):
+    """Disables mod archives: each is renamed <name>.disabled, which the game does not load. This does
+    not uninstall the mod: nothing of it is removed, and giving the archive back its name turns it on."""
+    for p in paths:
+        if os.path.exists(p + ".disabled"):
+            raise InstallerError("%s.disabled already exists: %s was not disabled" % (p, p))
+    for p in paths:
+        os.rename(p, p + ".disabled")
+        say("  disabled: %s (now %s.disabled)" % (p, os.path.basename(p)))
+
+
 # ------------------------------------------------------------------ Wow.exe and backups
 
 def interface_checks(M):
@@ -1963,6 +1982,10 @@ def run_console(M, args, settings):
         print_conflicts(state)
     for path, message in (client.unreadable if client else []):
         say("  archive ignored, unreadable: %s (%s)" % (path, message))
+    mods = conflicting_mods(state, client) if client is not None and not state.strong() else []
+    if mods:
+        say("  Conflict with another mod, whose archive(s) hold them: %s" % ", ".join(mods))
+        say("  Disabling them (renamed .disabled) lets this module install; it does not uninstall that mod.")
     if not state.strong() and not state.weak():
         refusals = wow_exe_refusals(M, client)
         if refusals:
@@ -1972,18 +1995,32 @@ def run_console(M, args, settings):
     refuse_while_running(server, client)
     say()
     backup = not args.no_backup
+    if mods and args.disable_mods:
+        heading("Disabling the other mod's archives")
+        disable_archives(mods)
+        client = Client(client.folder)
+        state = survey(M, server, client, dbs)
+        heading("State after that")
+        print_state(state)
+        if state.has_conflicts():
+            print_conflicts(state)
+        say()
     if state.strong():
         say("The module is present, in whole or in part: this run REMOVES everything that is left of it.")
         remove_and_check(M, server, client, dbs, state, backup=backup)
         return 0
     if state.weak():
         say("CONFLICT: these items carry the module's identifiers, but nothing proves they are its own.")
+        if mods and not args.disable_mods:
+            say("--disable-mods disables the other mod's archives (it does not uninstall that mod).")
+        changed = "only the other mod's archives were disabled" if mods and args.disable_mods else \
+            "nothing was changed"
         if not state.removable():
-            say("Stopped: nothing was changed. None of them is a leftover the installer can remove (a game file")
+            say("Stopped: %s. None of them is a leftover the installer can remove (a game file" % changed)
             say("of another archive, rows of an official archive): no install while they are there.")
             return 1
         if not args.leftovers:
-            say("Stopped: nothing was changed (--leftovers removes them, if they are leftovers of the module).")
+            say("Stopped: %s (--leftovers removes them, if they are leftovers of the module)." % changed)
             return 1
         remove_and_check(M, server, client, dbs, state, leftovers=True, backup=backup)
         return 0
@@ -2083,6 +2120,9 @@ def main(load_manifest):
                    help="with --yes: patch Wow.exe when it would refuse the module's interface files")
     p.add_argument("--no-backup", action="store_true",
                    help="with --yes: do not copy the game archives about to change first")
+    p.add_argument("--disable-mods", action="store_true",
+                   help="with --yes: disable the archives of another mod in conflict with the module (renamed "
+                        ".disabled; this does not uninstall that mod), then go on")
     args = p.parse_args()
     settings = load_settings()
     if not (args.status or args.yes):

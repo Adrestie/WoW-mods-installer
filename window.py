@@ -285,6 +285,10 @@ class InstallerWindow(object):
         self.module_title.pack(side="left", padx=12)
         self.action_button = ttk.Button(head, text="Install", style="Install.TButton", command=self.act)
         self.action_button.pack(side="right")
+        # shown only when another mod's archives are in conflict with the module
+        self.mods = []
+        self.mods_button = ttk.Button(head, text="Disable the other mod...", style="Accent.TButton",
+                                      command=self.disable_mods)
         self.explanation = ReadOnlyText(top, BG)
         self.explanation.pack(fill="x", pady=(8, 6))
         self.copyable_text(self.explanation)
@@ -406,11 +410,16 @@ class InstallerWindow(object):
         self.action = action
         # without an action, the button stays greyed out as Install
         self.action_button.configure(text=ACTIONS[action or "install"][0], style=ACTIONS[action or "install"][1])
+        if kind == "conflict" and self.mods:
+            self.mods_button.pack(side="right", padx=(0, 10))
+        else:
+            self.mods_button.pack_forget()
         self.update_buttons()
 
     def update_buttons(self):
         self.check_button.configure(state="disabled" if self.working else "normal")
         self.action_button.configure(state="normal" if self.action and not self.working else "disabled")
+        self.mods_button.configure(state="disabled" if self.working else "normal")
 
     def dialog(self, title, text, buttons, kind="info", focus=0, option=None):
         """A modal dialog in the window's colours; buttons: [(label, value, style)], left to right, the one
@@ -740,21 +749,27 @@ class InstallerWindow(object):
                 if label not in ("worldserver", "sources", "game")))
         self.fill_tree(state, client)
         title = "%s  (%s)" % (M.title, M.name) if M.title != M.name else M.name
+        self.mods = core.conflicting_mods(state, client) if client is not None and not state.strong() else []
+        # a conflict with another mod: what the button above does, and that it uninstalls nothing
+        with_mod = ("Conflict with another mod: items below come from %d archive%s of a mod that is not Blizzard's. "
+                    "Disable the other mod (button above) to install this module: its archives are renamed "
+                    ".disabled and the game no longer loads them. This does not uninstall that mod."
+                    % (len(self.mods), "s" if len(self.mods) > 1 else "")) if self.mods else ""
         if state.strong():
             self.show_state("present", title, "Installed, in whole or in part. Remove takes away what is left: %s."
                             % removal_parts(M, dbs), "remove")
         elif state.weak() and state.removable():
-            self.show_state("conflict", title, "The items below carry the module's identifiers without proof they "
-                                               "are its own: no install while they are there. If they are leftovers "
-                                               "of this module, Remove leftovers takes away their database and DBC "
-                                               "rows (never a game file).", "leftovers")
+            self.show_state("conflict", title, ("The items below carry the module's identifiers without proof they "
+                                                "are its own: no install while they are there. If they are "
+                                                "leftovers of this module, Remove leftovers takes away their database "
+                                                "and DBC rows (never a game file). " + with_mod).strip(), "leftovers")
         elif state.weak():
-            # nothing a removal of leftovers could take: no button
-            self.show_state("conflict", title, "The items below stand in the way and are not leftovers the "
-                                               "installer can remove: another archive of the game provides its own "
-                                               "version of a file of the module, or an official archive holds rows "
-                                               "with its identifiers. The installer never changes them: no install "
-                                               "while they are there.")
+            # nothing a removal of leftovers could take: no action button
+            self.show_state("conflict", title, with_mod or
+                            "The items below stand in the way and are not leftovers the installer can remove: another "
+                            "archive of the game provides its own version of a file of the module, or an official "
+                            "archive holds rows with its identifiers. The installer never changes them: no install "
+                            "while they are there.")
         else:
             self.show_state("absent", title, "Not installed. Install puts in place: %s."
                             % install_parts(M, server, client), "install")
@@ -779,6 +794,28 @@ class InstallerWindow(object):
             self.tree.insert("", "end", text="No trace of the module", values=("",))
 
     # -- install, remove --------------------------------------------------------
+    def disable_mods(self):
+        """Disables the archives of the other mod in conflict, once the user agrees, then checks again."""
+        if self.working or not self.context or not self.mods:
+            return
+        M, client, mods = self.context[0], self.context[2], list(self.mods)
+        answer = self.dialog("Disable the other mod?",
+                             "These archives of another mod are in conflict with %s. Each is renamed "
+                             "<name>.disabled, so that the game no longer loads it:\n\n%s\n\nThis does not uninstall "
+                             "that mod: its archives stay on disk, and so does anything else it installed. Giving "
+                             "them back their names turns it on again." % (M.title, "\n".join(mods)),
+                             [("Disable", True, "Accent.TButton"), ("Cancel", False, "TButton")], kind="warning",
+                             focus=1)
+        if not answer:
+            return
+
+        def job():
+            core.refuse_while_running(None, client)
+            core.disable_archives(mods)
+
+        self.write_log("")
+        self.work("Disabling...", job, lambda result: self.check())
+
     def act(self):
         if self.working or not self.context or not self.action:
             return

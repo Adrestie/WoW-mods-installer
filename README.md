@@ -45,7 +45,11 @@ right-click menu; Ctrl+C on a dialog copies its whole message.
   file shipped in another version by another archive, database rows without
   the rest of the module): it is a CONFLICT. It does not install. It removes
   them only if the user confirms they are leftovers of the module, and never a
-  game file; when only game files stand in the way, it offers nothing.
+  game file. When they come from another mod's archives (neither Blizzard's
+  nor one the installer writes into), it says so and offers to disable that
+  mod: its archives are renamed `<name>.disabled`, which the game does not
+  load; this does not uninstall the mod, and giving them back their names
+  turns it on again.
 
 It refuses to write anything while the worldserver or the game is running.
 
@@ -96,6 +100,7 @@ unexpected error).
 | `--leftovers` | with `--yes`: the conflicting items are leftovers of the module, remove them |
 | `--patch-wow-exe` | with `--yes`: patch `Wow.exe` when it would refuse the module's interface files |
 | `--no-backup` | with `--yes`: do not copy the game archives about to change |
+| `--disable-mods` | with `--yes`: disable the archives of another mod in conflict with the module (renamed `.disabled`; this does not uninstall that mod), then go on |
 
 It also runs without being compiled: `python installer\installer.py [module]`
 (Python 3.12 or later, standard library only, tkinter included).
