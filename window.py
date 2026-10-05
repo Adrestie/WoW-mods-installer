@@ -174,6 +174,33 @@ def dark_title_bar(window):
         pass
 
 
+class ReadOnlyText(tk.Text):
+    """Text shown like a label that the user can select and copy, as tall as the lines it wraps into.
+    width: the width it asks for, in characters (it grows with its place when packed to fill)."""
+
+    def __init__(self, master, background, foreground=TEXT, width=1):
+        super().__init__(master, wrap="word", width=width, height=1, relief="flat", borderwidth=0,
+                         highlightthickness=0, padx=0, pady=0, font=("Segoe UI", 9), background=background,
+                         foreground=foreground, selectbackground=SELECTED, inactiveselectbackground=SELECTED,
+                         selectforeground=TEXT, cursor="xterm", takefocus=0, state="disabled")
+        self.bind("<Configure>", lambda e: self.fit())
+
+    def set(self, text):
+        self.configure(state="normal")
+        self.delete("1.0", "end")
+        self.insert("1.0", text)
+        self.configure(state="disabled")
+        self.fit()
+
+    def fit(self):
+        """Height: the lines the text wraps into at its present width, once it has one (before, it
+        would wrap one character a line and ask for a huge height)."""
+        if self.winfo_width() <= 1:
+            return
+        breaks = self.tk.call(self._w, "count", "-update", "-displaylines", "1.0", "end-1c")
+        self.configure(height=int(breaks or 0) + 1)
+
+
 class InstallerWindow(object):
     def __init__(self, root, module, settings, load_manifest):
         self.root = root
@@ -231,10 +258,11 @@ class InstallerWindow(object):
         folders.bind("<Configure>", lambda e: self.wrap_notes(e.width))
         bar = ttk.Frame(folders)
         bar.grid(row=4, column=0, sticky="ew", pady=(8, 0))
-        self.places = ttk.Label(bar, text="", style="Hint.TLabel", justify="left", wraplength=700)
-        self.places.pack(side="left")
         self.check_button = ttk.Button(bar, text="Check", style="Accent.TButton", command=self.check)
         self.check_button.pack(side="right")
+        self.places = ReadOnlyText(bar, BG, foreground=MUTED)
+        self.places.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        self.copyable_text(self.places)
 
         # Progress, at the bottom of the window.
         status = ttk.Frame(outer)
@@ -257,9 +285,9 @@ class InstallerWindow(object):
         self.module_title.pack(side="left", padx=12)
         self.action_button = ttk.Button(head, text="Install", style="Install.TButton", command=self.act)
         self.action_button.pack(side="right")
-        self.explanation = ttk.Label(top, text="", wraplength=860, justify="left")
+        self.explanation = ReadOnlyText(top, BG)
         self.explanation.pack(fill="x", pady=(8, 6))
-        top.bind("<Configure>", lambda e: self.explanation.configure(wraplength=max(300, e.width - 10)))
+        self.copyable_text(self.explanation)
         tree_box = ttk.Frame(top)
         tree_box.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(tree_box, columns=("detail",), show="tree headings", height=7)
@@ -273,6 +301,12 @@ class InstallerWindow(object):
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        # Rows selected (Ctrl+A: all of them) are copied by Ctrl+C or the right-click menu.
+        for key in ("<Control-c>", "<Control-C>"):
+            self.tree.bind(key, lambda e: self.copy(self.tree_text(self.selected_rows())))
+        for key in ("<Control-a>", "<Control-A>"):
+            self.tree.bind(key, lambda e: self.tree.selection_set(self.tree_rows()))
+        self.tree.bind("<Button-3>", self.tree_menu)
 
         bottom = ttk.Frame(panes)
         panes.add(bottom, weight=1)
@@ -281,12 +315,16 @@ class InstallerWindow(object):
         log_box.pack(fill="both", expand=True)
         self.log = tk.Text(log_box, height=6, wrap="none", font=("Consolas", 9), relief="flat", borderwidth=0,
                            background=FIELD, foreground=TEXT, insertbackground=TEXT, selectbackground=SELECTED,
-                           highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER,
-                           padx=6, pady=4, state="disabled")
+                           inactiveselectbackground=SELECTED, highlightthickness=1, highlightbackground=BORDER,
+                           highlightcolor=BORDER, padx=6, pady=4, state="disabled")
         log_scroll = ttk.Scrollbar(log_box, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=log_scroll.set)
         self.log.pack(side="left", fill="both", expand=True)
         log_scroll.pack(side="right", fill="y")
+        self.copyable_text(self.log)
+        # Every other text: copied whole from its right-click menu.
+        root.bind_class("TLabel", "<Button-3>",
+                        lambda e: self.copy_menu(e, [("Copy", str(e.widget.cget("text")))]), add="+")
 
         self.show_state("unknown", "", "Fill in the folders, then press Check.")
         dark_title_bar(root)
@@ -364,7 +402,7 @@ class InstallerWindow(object):
         label, colour = BADGES[kind]
         self.badge.configure(text=label, bg=colour)
         self.module_title.configure(text=title)
-        self.explanation.configure(text=text)
+        self.explanation.set(text)
         self.action = action
         # without an action, the button stays greyed out as Install
         self.action_button.configure(text=ACTIONS[action or "install"][0], style=ACTIONS[action or "install"][1])
@@ -388,8 +426,16 @@ class InstallerWindow(object):
         body = ttk.Frame(top, style="Dialog.TFrame", padding=(24, 18, 24, 16))
         body.pack(fill="both", expand=True)
         ttk.Label(body, text=title, style="Dialog%s.TLabel" % kind.capitalize()).pack(anchor="w")
-        ttk.Label(body, text=text, style="Dialog.TLabel", wraplength=560, justify="left").pack(anchor="w",
-                                                                                           pady=(8, 18))
+        # the message, selectable, as wide as its longest line up to 560 pixels
+        font = tkfont.Font(font=("Segoe UI", 9))
+        widest = max(font.measure(line) for line in text.splitlines() or [""])
+        message = ReadOnlyText(body, CARD, width=max(1, -(-min(560, widest) // font.measure("0"))))
+        message.set(text)
+        message.pack(anchor="w", pady=(8, 18))
+        self.copyable_text(message)
+        # Ctrl+C with the focus on a button copies the whole dialog, as Windows does
+        for key in ("<Control-c>", "<Control-C>"):
+            top.bind(key, lambda e: self.copy("%s\n\n%s" % (title, text)))
         ticked = tk.BooleanVar(value=True)
         if option:
             ttk.Checkbutton(body, text=option, variable=ticked, style="Dialog.TCheckbutton").pack(anchor="w",
@@ -405,15 +451,67 @@ class InstallerWindow(object):
         top.bind("<Escape>", lambda _: top.destroy())
         top.bind("<Return>", lambda _: top.focus_get().invoke() if hasattr(top.focus_get(), "invoke") else None)
         dark_title_bar(top)
+        # shown unseen first: the message wraps at its real width, then the dialog is placed
+        top.attributes("-alpha", 0.0)
+        top.deiconify()
+        top.update_idletasks()
+        message.fit()
         top.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() - top.winfo_reqwidth()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - top.winfo_reqheight()) // 3
         top.geometry("+%d+%d" % (max(0, x), max(0, y)))
-        top.deiconify()
+        top.attributes("-alpha", 1.0)
         top.grab_set()
         widgets[focus].focus_set()
         self.root.wait_window(top)
         return (chosen["value"], ticked.get()) if option else chosen["value"]
+
+    # -- copying --------------------------------------------------------------
+    def copy(self, text):
+        if text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+
+    def copy_menu(self, event, entries):
+        """A right-click menu at the mouse; entries: [(label, text it copies)], greyed out when empty."""
+        menu = tk.Menu(self.root, tearoff=0, background=CARD, foreground=TEXT, activebackground=SELECTED,
+                       activeforeground=TEXT, disabledforeground=MUTED, borderwidth=1, relief="flat")
+        for label, text in entries:
+            menu.add_command(label=label, command=lambda t=text: self.copy(t), state="normal" if text else "disabled")
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def copyable_text(self, widget):
+        """Selection with the mouse, Ctrl+C, Ctrl+A and a right-click menu on a read-only Text."""
+        def selection():
+            return widget.get("sel.first", "sel.last") if widget.tag_ranges("sel") else ""
+        widget.bind("<Button-1>", lambda e: widget.focus_set(), add="+")
+        for key in ("<Control-c>", "<Control-C>"):
+            widget.bind(key, lambda e: (self.copy(selection()), "break")[1])
+        for key in ("<Control-a>", "<Control-A>"):
+            widget.bind(key, lambda e: (widget.tag_add("sel", "1.0", "end-1c"), "break")[1])
+        widget.bind("<Button-3>", lambda e: self.copy_menu(e, [("Copy", selection()),
+                                                               ("Copy all", widget.get("1.0", "end-1c"))]))
+
+    def tree_rows(self):
+        """Every row of the list, in its order."""
+        return [i for group in self.tree.get_children() for i in [group] + list(self.tree.get_children(group))]
+
+    def selected_rows(self):
+        selected = set(self.tree.selection())
+        return [i for i in self.tree_rows() if i in selected]
+
+    def tree_text(self, rows):
+        """The rows as lines: What, then Where after a tab, indented under their group."""
+        return "\n".join(("  " if self.tree.parent(i) else "") +
+                         "\t".join([self.tree.item(i, "text")] + [v for v in self.tree.item(i, "values") if v])
+                         for i in rows)
+
+    def tree_menu(self, event):
+        row = self.tree.identify_row(event.y)
+        if row and row not in self.tree.selection():
+            self.tree.selection_set(row)
+        self.copy_menu(event, [("Copy", self.tree_text(self.selected_rows())),
+                               ("Copy all", self.tree_text(self.tree_rows()))])
 
     # -- fields ---------------------------------------------------------------
     def place_fields(self):
@@ -522,7 +620,7 @@ class InstallerWindow(object):
             return
         self.context = None
         self.tree.delete(*self.tree.get_children())
-        self.places.configure(text="")
+        self.places.set("")
         self.show_state("unknown", self.module_title.cget("text"), "The folders changed: press Check.")
 
     def values(self):
@@ -632,10 +730,10 @@ class InstallerWindow(object):
         self.filling = False
         core.remember(self.settings, M, server, client, dbs)
         if server is None:
-            self.places.configure(text="")
+            self.places.set("")
         else:
             # Where the worldserver keeps its files, relative to its folder when inside it.
-            self.places.configure(text="From the worldserver folder:  " + "  \u00b7  ".join(
+            self.places.set("From the worldserver folder:  " + "  \u00b7  ".join(
                 "%s: %s" % (label, os.path.relpath(path, server.bin)
                            if label != "databases" and core.is_inside(path, server.bin) else path)
                 for label, path in core.folder_lines(M, server, client, dbs)

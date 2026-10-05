@@ -21,7 +21,9 @@ says whether the path given is the expected one. It remembers them in
 game archives and the database, then shows the module's state and the traces
 found, and the one button that fits: **Install**, **Remove** or **Remove
 leftovers**, each confirmed before anything is written. What the installer
-does goes to the log at the bottom of the window.
+does goes to the log at the bottom of the window. Every text of the window can
+be copied: selected with the mouse or Ctrl+A, then Ctrl+C, or from its
+right-click menu; Ctrl+C on a dialog copies its whole message.
 
 - **No trace of the module**: it INSTALLS. It copies the module into the
   server sources (`modules/`), puts its configuration and Lua scripts in
