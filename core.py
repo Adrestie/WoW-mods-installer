@@ -270,34 +270,69 @@ def archive_rank(name, locale=None):
     return (2, 0, path.translate(ASCII_LOWER)), official
 
 
-class Client(object):
-    """The game folder: its archives, in the order the client reads them."""
+def language_name(name):
+    """A language as the game writes it (enus: enUS)."""
+    return name[:2].lower() + name[2:].upper() if len(name) == 4 else name
 
-    def __init__(self, folder):
+
+class Client(object):
+    """The game folder: its archives, in the order the client reads them.
+
+    locale: the language the game uses (enUS, frFR...), for a game folder that does not say it itself,
+    that is several language folders in Data and none named by SET locale in WTF\\Config.wtf."""
+
+    def __init__(self, folder, locale=None):
         self.folder = os.path.normpath(os.path.abspath(folder))
         self.data = next((os.path.join(self.folder, n) for n in os.listdir(self.folder)
                           if n.lower() == "data" and os.path.isdir(os.path.join(self.folder, n))), None) \
             if os.path.isdir(self.folder) else None
         if not self.data or not any(n.lower().endswith(".mpq") for n in os.listdir(self.data)):
             raise InstallerError("no Data folder with .MPQ archives in %s" % self.folder)
-        self.locale_dir = self._find_locale_dir()
+        self.locale = locale
+        # {name in lower case: name on disk} of the folders of Data that hold .MPQ archives
+        self.languages = {n.lower(): n for n in os.listdir(self.data) if os.path.isdir(os.path.join(self.data, n))
+                          and glob.glob(os.path.join(self.data, n, "*.mpq"))}
+        self.config_locale = self._config_locale()
+        self.own_locale = self._own_locale()
+        name = self.own_locale or self.languages.get((locale or "").lower())
+        self.locale_dir = os.path.join(self.data, name) if name else None
         self.wow_exe = wow_exe.find(self.folder)
         self._open = {}
         self.unreadable = []
 
-    def _find_locale_dir(self):
-        wanted = None
+    def _config_locale(self):
+        """The language SET locale names in WTF\\Config.wtf, "" without that line, None without the file."""
         wtf = os.path.join(self.folder, "WTF", "Config.wtf")
-        if os.path.isfile(wtf):
-            with open(wtf, encoding="latin-1") as f:
-                m = re.search(r'^SET locale "(\w+)"', f.read(), re.M | re.I)
-                wanted = m.group(1).lower() if m else None
-        folders = [n for n in os.listdir(self.data) if os.path.isdir(os.path.join(self.data, n)) and
-                   glob.glob(os.path.join(self.data, n, "*.mpq"))]
-        for n in folders:
-            if wanted and n.lower() == wanted:
-                return os.path.join(self.data, n)
-        return os.path.join(self.data, folders[0]) if len(folders) == 1 else None
+        if not os.path.isfile(wtf):
+            return None
+        with open(wtf, encoding="latin-1") as f:
+            m = re.search(r'^SET locale "(\w+)"', f.read(), re.M | re.I)
+        return m.group(1) if m else ""
+
+    def _own_locale(self):
+        """The language folder the game folder names itself: the one of WTF\\Config.wtf, or the only one."""
+        named = self.languages.get((self.config_locale or "").lower())
+        return named or (next(iter(self.languages.values())) if len(self.languages) == 1 else None)
+
+    def language_problem(self):
+        """Why the installer cannot tell which language folder the game reads, or None."""
+        if not self.languages:
+            return None
+        found = ", ".join(sorted(language_name(n) for n in self.languages.values()))
+        if self.locale and self.locale.lower() not in self.languages:
+            return "no %s language folder in %s (there: %s)" % (self.locale, self.data, found)
+        if self.locale and self.own_locale and self.locale.lower() != self.own_locale.lower():
+            return "the game uses %s (%s), not %s" % (
+                language_name(self.own_locale),
+                "WTF\\Config.wtf" if len(self.languages) > 1 else "the only language in Data", self.locale)
+        if self.locale_dir:
+            return None
+        why = "there is no WTF\\Config.wtf" if self.config_locale is None else \
+            "WTF\\Config.wtf has no SET locale line" if not self.config_locale else \
+            "WTF\\Config.wtf names %s, which Data does not hold" % self.config_locale
+        return ("the game's Data folder holds several languages (%s) and %s: the installer cannot tell which "
+                "one the game reads. Choose it (Game language in the window, --locale in the console), or "
+                "start the game once so that it writes WTF\\Config.wtf" % (found, why))
 
     def rank(self, path):
         """The load rank of an archive of the game (archive_rank), existing or not."""
@@ -307,6 +342,9 @@ class Client(object):
 
     def archives(self):
         """[(rank, path)] of every archive the game loads, from weakest to strongest."""
+        problem = self.language_problem()
+        if problem:
+            raise InstallerError(problem)
         found = []
         patterns = [(self.data, DATA_ARCHIVES)]
         if self.locale_dir:
@@ -1353,7 +1391,7 @@ def restore_wow_exe(M, client):
     exe = client.wow_exe
     if not exe:
         return
-    fresh = Client(client.folder)
+    fresh = Client(client.folder, client.locale)
     for check in interface_checks(M):
         if wow_exe.check_state(exe, check) != "patched":
             continue
@@ -1746,7 +1784,7 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
         else:
             say("Nothing was changed: the installation stopped before its first write.")
         raise
-    missing = missing_after_install(M, server, Client(client.folder) if client else None, dbs)
+    missing = missing_after_install(M, server, Client(client.folder, client.locale) if client else None, dbs)
     heading("Check")
     if missing:
         raise InstallerError("after installation, missing: %s" % "; ".join(missing))
@@ -1776,7 +1814,7 @@ def remove_and_check(M, server, client, dbs, state, leftovers=False, backup=True
 
 
 def check_removal(M, server, client, dbs):
-    left = survey(M, server, Client(client.folder) if client else None, dbs)
+    left = survey(M, server, Client(client.folder, client.locale) if client else None, dbs)
     heading("Check")
     if left.strong():
         print_state(left)
@@ -1800,7 +1838,7 @@ def run_console(M, args, settings):
     # --server "" leaves the worldserver folder empty, for a manifest that makes it optional
     server = open_server(M, args.server if args.server is not None else settings.get("server"),
                          args.sources or settings.get("sources"))
-    client = Client(args.client or settings.get("client") or "") if "game" in M.fields else None
+    client = Client(args.client or settings.get("client") or "", args.locale) if "game" in M.fields else None
     dbs = {}
     if uses_databases(M, server):
         dbs = open_databases(server, find_mysql(server, settings, args.mysql))
@@ -1858,6 +1896,8 @@ def folder_lines(M, server, client, dbs):
         lines.append(("worldserver", "none: the game part only"))
     if client is not None:
         lines.append(("game", client.folder))
+        if client.locale_dir:
+            lines.append(("game language", language_name(os.path.basename(client.locale_dir))))
     if dbs:
         lines.append(("databases", "%s, %s" % (dbs["world"].name, dbs["characters"].name)))
     return lines
@@ -1926,6 +1966,8 @@ def main(load_manifest):
                                     "empty when the module's manifest makes it optional")
     p.add_argument("--sources", help="AzerothCore sources folder")
     p.add_argument("--client", help="game folder")
+    p.add_argument("--locale", help="language the game uses (enUS, frFR...), when its folder does not say it: "
+                                    "several languages in Data and no SET locale in WTF\\Config.wtf")
     p.add_argument("--mysql", help="path of mysql.exe")
     p.add_argument("--status", action="store_true", help="show the current state, change nothing")
     p.add_argument("--yes", action="store_true", help="install or remove without window "

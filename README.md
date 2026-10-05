@@ -14,7 +14,9 @@ that contains `installer.json`) on it. Its window holds the module folder,
 then the folders that module's manifest asks for: the required ones in one
 panel, the optional ones in another, under what they add to the module and
 each with the reason it is optional. A folder the module does not use is not
-shown. The AzerothCore sources and
+shown. Under the game folder, the game language is the one `WTF\Config.wtf`
+names (`SET locale`), or the only one in `Data`; otherwise it is chosen in its
+list. The AzerothCore sources and
 `mysql.exe` are found by themselves when left empty. Under each field, a line
 says whether the path given is the expected one. It remembers them in
 `%APPDATA%\WoW-mods\installer-settings.json`. **Check** reads the server, the
@@ -84,6 +86,7 @@ unexpected error).
 | `--server DIR` | worldserver folder (the one that contains `worldserver.exe`); `--server ""` leaves it empty, when the module's manifest makes it optional; ignored when the module does not use it |
 | `--sources DIR` | AzerothCore sources, when `CMakeCache.txt` does not lead to them |
 | `--client DIR` | game folder (the one that contains `Wow.exe` and `Data`) |
+| `--locale xxXX` | language the game uses (`enUS`, `frFR`...), when `Data` holds several and `WTF\Config.wtf` names none |
 | `--mysql FILE` | path of `mysql.exe` |
 | `--status` | show the current state, change nothing |
 | `--yes` | install or remove without window |
