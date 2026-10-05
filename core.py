@@ -271,76 +271,39 @@ def archive_rank(name, locale=None):
     return (2, 0, path.translate(ASCII_LOWER)), official
 
 
-def language_name(name):
-    """A language as the game writes it (enus: enUS)."""
-    return name[:2].lower() + name[2:].upper() if len(name) == 4 else name
-
-
 class Client(object):
     """The game folder: its archives, in the order the client reads them.
 
-    locale: the language the game uses (enUS, frFR...), for a game folder that does not say it itself,
-    that is several language folders in Data and none named by SET locale in WTF\\Config.wtf."""
+    The game reads Data and the one language folder its settings name. The installer does without
+    knowing which: a DBC file it copies serves every language (game_copy), and it reads the game as
+    each language does (views). Its own reading takes the first language folder the game reads
+    before Data (any but ruRU, zhCN and zhTW): Data\\patch-Z.MPQ then serves every such language."""
 
-    def __init__(self, folder, locale=None):
+    def __init__(self, folder):
         self.folder = os.path.normpath(os.path.abspath(folder))
         self.data = next((os.path.join(self.folder, n) for n in os.listdir(self.folder)
                           if n.lower() == "data" and os.path.isdir(os.path.join(self.folder, n))), None) \
             if os.path.isdir(self.folder) else None
         if not self.data or not any(n.lower().endswith(".mpq") for n in os.listdir(self.data)):
             raise InstallerError("no Data folder with .MPQ archives in %s" % self.folder)
-        self.locale = locale
         # {name in lower case: name on disk} of the folders of Data that hold .MPQ archives
         self.languages = {n.lower(): n for n in os.listdir(self.data) if os.path.isdir(os.path.join(self.data, n))
                           and glob.glob(os.path.join(self.data, n, "*.mpq"))}
-        self.config_locale = self._config_locale()
-        self.own_locale = self._own_locale()
-        name = self.own_locale or self.languages.get((locale or "").lower())
+        name = min(self.languages.values(), key=lambda n: (n.lower() > "patch", n.lower()), default=None)
         self.locale_dir = os.path.join(self.data, name) if name else None
         self.wow_exe = wow_exe.find(self.folder)
         self._open = {}
         self.unreadable = []
 
-    def _config_locale(self):
-        """The language SET locale names in WTF\\Config.wtf, "" without that line, None without the file."""
-        wtf = os.path.join(self.folder, "WTF", "Config.wtf")
-        if not os.path.isfile(wtf):
-            return None
-        with open(wtf, encoding="latin-1") as f:
-            m = re.search(r'^SET locale "(\w+)"', f.read(), re.M | re.I)
-        return m.group(1) if m else ""
-
     def in_language(self, name):
         """The same game read in another of its languages (name: a language folder of Data)."""
         view = copy.copy(self)
-        view.locale, view.own_locale = None, name
         view.locale_dir = os.path.join(self.data, name)
         return view
 
-    def _own_locale(self):
-        """The language folder the game folder names itself: the one of WTF\\Config.wtf, or the only one."""
-        named = self.languages.get((self.config_locale or "").lower())
-        return named or (next(iter(self.languages.values())) if len(self.languages) == 1 else None)
-
-    def language_problem(self):
-        """Why the installer cannot tell which language folder the game reads, or None."""
-        found = ", ".join(sorted(language_name(n) for n in self.languages.values())) or "none"
-        if self.locale and self.locale.lower() not in self.languages:
-            return "no %s language folder in %s (there: %s)" % (self.locale, self.data, found)
-        if not self.languages:
-            return None
-        if self.locale and self.own_locale and self.locale.lower() != self.own_locale.lower():
-            return "the game uses %s (%s), not %s" % (
-                language_name(self.own_locale),
-                "WTF\\Config.wtf" if len(self.languages) > 1 else "the only language in Data", self.locale)
-        if self.locale_dir:
-            return None
-        why = "there is no WTF\\Config.wtf" if self.config_locale is None else \
-            "WTF\\Config.wtf has no SET locale line" if not self.config_locale else \
-            "WTF\\Config.wtf names %s, which Data does not hold" % self.config_locale
-        return ("the game's Data folder holds several languages (%s) and %s: the installer cannot tell which "
-                "one the game reads. Choose it (Game language in the window, --locale in the console), or "
-                "start the game once so that it writes WTF\\Config.wtf" % (found, why))
+    def views(self):
+        """The game read in each of its languages (the game itself, without language folder)."""
+        return [self.in_language(n) for n in sorted(self.languages.values(), key=str.lower)] or [self]
 
     def rank(self, path):
         """The load rank of an archive of the game (archive_rank), existing or not."""
@@ -350,9 +313,6 @@ class Client(object):
 
     def archives(self):
         """[(rank, path)] of every archive the game loads, from weakest to strongest."""
-        problem = self.language_problem()
-        if problem:
-            raise InstallerError(problem)
         found = []
         patterns = [(self.data, DATA_ARCHIVES)]
         if self.locale_dir:
@@ -366,16 +326,20 @@ class Client(object):
         return sorted(found)
 
     def stray_archives(self):
-        """The .mpq files of Data and of its subfolders that the game does not load (a name it does
-        not look for, another language): never written into, only searched for what a module left."""
-        loaded = {os.path.normcase(p) for r, p in self.archives()}
+        """The .mpq files of Data and of its subfolders that the game does not load in any language (a
+        name it does not look for): never written into, only searched for what a module left."""
+        loaded = {os.path.normcase(p) for view in self.views() for r, p in view.archives()}
         folders = [self.data] + [os.path.join(self.data, n) for n in sorted(os.listdir(self.data))
                                  if os.path.isdir(os.path.join(self.data, n))]
         return [p for folder in folders for p in (os.path.join(folder, n) for n in sorted(os.listdir(folder)))
                 if p.lower().endswith(".mpq") and os.path.isfile(p) and os.path.normcase(p) not in loaded]
 
     def custom_archives(self):
-        return [p for r, p in self.archives() if not archive_rank(os.path.basename(p))[1]]
+        """The custom archives the game loads, in any of its languages."""
+        found = []
+        for view in self.views():
+            found += [p for r, p in view.archives() if not archive_rank(os.path.basename(p))[1] and p not in found]
+        return found
 
     def open(self, path):
         """The archive, or None if it cannot be read (recorded in unreadable)."""
@@ -839,6 +803,12 @@ class State(object):
     def weak(self):
         return bool(self.server_conflicts or self.client_conflicts or self.file_conflicts or self.db_weak)
 
+    def removable(self):
+        """True when a removal of leftovers has something to take: DBC rows outside the official
+        archives, database rows; never a game file of another archive."""
+        return bool(self.server_conflicts or self.db_weak or
+                    any(not archive_rank(os.path.basename(a))[1] for a, f, ids in self.client_conflicts))
+
     def lines(self):
         """[(area, text)] of the module's traces."""
         out = [("sources", d) for d in self.sources]
@@ -1164,17 +1134,22 @@ def survey_game(M, client, s, installed):
                 s.client_conflicts.append((path, d.file, others))
         s.files += [(path, n) for n in module_files_in(M, a, receipt)]
 
-    # What the game reads: rows of an official archive with the same identifier
-    # (Blizzard's rows) and files provided in another version.
+    # What the game reads, in each of its languages: rows of an official archive with the same
+    # identifier (Blizzard's rows) and files provided in another version.
+    views = client.views()
     for d in installed:
         if d.client is None:
             continue
         name = "DBFilesClient\\" + d.file
-        w = client.winner(name)
-        if w and archive_rank(os.path.basename(w))[1]:
+        for w in sorted({view.winner(name) for view in views} - {None}):
+            if not archive_rank(os.path.basename(w))[1]:
+                continue
             raw = client.open(w).read(name)
             fields = dbc_split(raw, name)[0]
             if fields != d.fields:
+                # another language's file of another client version is left aside, as game_copy does
+                if w != client.winner(name):
+                    continue
                 raise dbc_layout_error(client, name, w, fields, d)
             ours, others = dbc_survey(raw, name, d, d.client)
             if others:
@@ -1182,16 +1157,16 @@ def survey_game(M, client, s, installed):
     mine = {(c.lower(), n.lower()) for c, n in s.files}
     target = os.path.normcase(client.top_archive())
     for name, source in M.game_files.items():
-        w = client.winner(name)
-        if not w or archive_rank(os.path.basename(w))[1] or (w.lower(), name.lower()) in mine:
-            continue
-        # Replaced on purpose: the other archive's version is shadowed, never overwritten --
-        # unless it sits in the very archive the module writes into.
-        if name.lower() in M.replaced and os.path.normcase(w) != target:
-            continue
-        with open(source, "rb") as f:
-            if client.open(w).read(name) != f.read():
-                s.file_conflicts.append((w, name))
+        for w in sorted({view.winner(name) for view in views} - {None}):
+            if archive_rank(os.path.basename(w))[1] or (w.lower(), name.lower()) in mine:
+                continue
+            # Replaced on purpose: the other archive's version is shadowed, never overwritten --
+            # unless it sits in the very archive the module writes into.
+            if name.lower() in M.replaced and os.path.normcase(w) != target:
+                continue
+            with open(source, "rb") as f:
+                if client.open(w).read(name) != f.read():
+                    s.file_conflicts.append((w, name))
 
 
 # ------------------------------------------------------------------ Wow.exe and backups
@@ -1326,15 +1301,21 @@ def archive_is_redundant(client, path, defs):
             any(not n.replace("/", "\\").lower().startswith("dbfilesclient\\") for n in present):
         return False
     for n in present:
-        below = client.winner(n, below=path)
-        if below is None:
+        if not copy_unchanged(client, n, defs.get(n.replace("/", "\\").split("\\")[-1].lower()), path, a.read(n)):
             return False
-        if client.open(below).read(n) != a.read(n):
-            # or the copy an install makes of it for every language (DBC files of the module: defs)
-            d = defs.get(n.replace("/", "\\").split("\\")[-1].lower())
-            if d is None or game_copy(client, n, d, path) != a.read(n):
-                return False
     return True
+
+
+def copy_unchanged(client, name, d, path, content):
+    """True if content, a DBC file of the archive path, says again what the game reads below it: the
+    file of one of its languages (copies made before game_copy), or, with the module's DBC entry d,
+    the copy an install makes for every language."""
+    readings = {view.winner(name, below=path) for view in client.views()} - {None}
+    if not readings:
+        return False
+    if any(client.open(w).read(name) == content for w in readings):
+        return True
+    return d is not None and game_copy(client, name, d, path) == content
 
 
 def removal_plan(M, state, leftovers=False):
@@ -1409,11 +1390,8 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True):
             new, n = dbc_remove(a.read(name), name, ids, defs[f].text)
             if not n:
                 continue
-            # A file the install copied whole goes, once it says again what the game reads below
-            # (merged in every language, or as one language reads it).
-            below = client.winner(name, below=path)
-            if f.lower() in added_by.get(path, ()) and below and \
-                    (client.open(below).read(name) == new or game_copy(client, name, defs[f], path) == new):
+            # A file the install copied whole goes, once it says again what the game reads below.
+            if f.lower() in added_by.get(path, ()) and copy_unchanged(client, name, defs[f], path, new):
                 copies.add(name)
                 say("  %s, %s: %d row(s) removed, and the copy the install added" % (path, f, n))
             else:
@@ -1482,7 +1460,7 @@ def restore_wow_exe(M, client):
     exe = client.wow_exe
     if not exe:
         return
-    fresh = Client(client.folder, client.locale)
+    fresh = Client(client.folder)
     for check in interface_checks(M):
         if wow_exe.check_state(exe, check) != "patched":
             continue
@@ -1877,7 +1855,7 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
         else:
             say("Nothing was changed: the installation stopped before its first write.")
         raise
-    missing = missing_after_install(M, server, Client(client.folder, client.locale) if client else None, dbs)
+    missing = missing_after_install(M, server, Client(client.folder) if client else None, dbs)
     heading("Check")
     if missing:
         raise InstallerError("after installation, missing: %s" % "; ".join(missing))
@@ -1907,7 +1885,7 @@ def remove_and_check(M, server, client, dbs, state, leftovers=False, backup=True
 
 
 def check_removal(M, server, client, dbs):
-    left = survey(M, server, Client(client.folder, client.locale) if client else None, dbs)
+    left = survey(M, server, Client(client.folder) if client else None, dbs)
     heading("Check")
     if left.strong():
         print_state(left)
@@ -1931,7 +1909,7 @@ def run_console(M, args, settings):
     # --server "" leaves the worldserver folder empty, for a manifest that makes it optional
     server = open_server(M, args.server if args.server is not None else settings.get("server"),
                          args.sources or settings.get("sources"))
-    client = Client(args.client or settings.get("client") or "", args.locale) if "game" in M.fields else None
+    client = Client(args.client or settings.get("client") or "") if "game" in M.fields else None
     dbs = {}
     if uses_databases(M, server):
         dbs = open_databases(server, find_mysql(server, settings, args.mysql))
@@ -1966,6 +1944,10 @@ def run_console(M, args, settings):
         return 0
     if state.weak():
         say("CONFLICT: these items carry the module's identifiers, but nothing proves they are its own.")
+        if not state.removable():
+            say("Stopped: nothing was changed. None of them is a leftover the installer can remove (a game file")
+            say("of another archive, rows of an official archive): no install while they are there.")
+            return 1
         if not args.leftovers:
             say("Stopped: nothing was changed (--leftovers removes them, if they are leftovers of the module).")
             return 1
@@ -1989,8 +1971,6 @@ def folder_lines(M, server, client, dbs):
         lines.append(("worldserver", "none: the game part only"))
     if client is not None:
         lines.append(("game", client.folder))
-        if client.locale_dir:
-            lines.append(("game language", language_name(os.path.basename(client.locale_dir))))
     if dbs:
         lines.append(("databases", "%s, %s" % (dbs["world"].name, dbs["characters"].name)))
     return lines
@@ -2059,8 +2039,6 @@ def main(load_manifest):
                                     "empty when the module's manifest makes it optional")
     p.add_argument("--sources", help="AzerothCore sources folder")
     p.add_argument("--client", help="game folder")
-    p.add_argument("--locale", help="language the game uses (enUS, frFR...), when its folder does not say it: "
-                                    "several languages in Data and no SET locale in WTF\\Config.wtf")
     p.add_argument("--mysql", help="path of mysql.exe")
     p.add_argument("--status", action="store_true", help="show the current state, change nothing")
     p.add_argument("--yes", action="store_true", help="install or remove without window "

@@ -14,9 +14,7 @@ that contains `installer.json`) on it. Its window holds the module folder,
 then the folders that module's manifest asks for: the required ones in one
 panel, the optional ones in another, under what they add to the module and
 each with the reason it is optional. A folder the module does not use is not
-shown. Under the game folder, the game language is the one `WTF\Config.wtf`
-names (`SET locale`), or the only one in `Data`; otherwise it is chosen in its
-list. The AzerothCore sources and
+shown. The AzerothCore sources and
 `mysql.exe` are found by themselves when left empty. Under each field, a line
 says whether the path given is the expected one. It remembers them in
 `%APPDATA%\WoW-mods\installer-settings.json`. **Check** reads the server, the
@@ -45,7 +43,7 @@ does goes to the log at the bottom of the window.
   file shipped in another version by another archive, database rows without
   the rest of the module): it is a CONFLICT. It does not install. It removes
   them only if the user confirms they are leftovers of the module, and never a
-  game file.
+  game file; when only game files stand in the way, it offers nothing.
 
 It refuses to write anything while the worldserver or the game is running.
 
@@ -54,17 +52,17 @@ Only the archives the game loads count: in `Data`, the base archives,
 archives, `patch-xxXX.MPQ` and `patch-xxXX-?.MPQ`. Another `.mpq` file is never
 written into; what a module left in one is removed with the rest.
 
-Everything a module puts into the game goes into one archive, the patch the
-game reads last, created if there is none: `Data\patch-Z.MPQ`, or
-`patch-xxXX-Z.MPQ` in the language folder for a Russian or Chinese client
-(ruRU, zhCN, zhTW), whose language folder the game reads after `Data`. No other
-archive is written into. A DBC file the game reads from another archive is
-copied whole into it, with the texts of every language folder of `Data`: the
-same copy serves the game in each of these languages, except a Russian or
-Chinese one, whose folder the game reads after `Data`. When that archive has
-no room left (hash table full, or a v1 archive past 4 GB), or when the game
-reads one of the module's DBC files from an archive read after it, it
-refuses, before writing anything.
+Everything a module puts into the game goes into one archive, created if
+there is none: `Data\patch-Z.MPQ`, whatever language the game is set to. A
+DBC file the game reads from another archive is copied whole into it, with the
+texts of every language folder of `Data`: the same copy serves each language.
+Only a client whose language folders are all Russian or Chinese (ruRU, zhCN,
+zhTW), which the game reads after `Data`, gets `patch-xxXX-Z.MPQ` in its
+language folder instead; mixed with other languages, these keep reading their
+own files. No other archive is written into. When that archive has no room
+left (hash table full, or a v1 archive past 4 GB), or when the game reads one
+of the module's DBC files from an archive read after it, it refuses, before
+writing anything.
 
 Before a game archive changes, it offers to copy it beside itself
 (`<name>.backup-<date>-<time>`), ticked by default, once it has checked that the
@@ -90,7 +88,6 @@ unexpected error).
 | `--server DIR` | worldserver folder (the one that contains `worldserver.exe`); `--server ""` leaves it empty, when the module's manifest makes it optional; ignored when the module does not use it |
 | `--sources DIR` | AzerothCore sources, when `CMakeCache.txt` does not lead to them |
 | `--client DIR` | game folder (the one that contains `Wow.exe` and `Data`) |
-| `--locale xxXX` | language the game uses (`enUS`, `frFR`...), when `Data` holds several and `WTF\Config.wtf` names none |
 | `--mysql FILE` | path of `mysql.exe` |
 | `--status` | show the current state, change nothing |
 | `--yes` | install or remove without window |

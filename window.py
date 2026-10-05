@@ -49,24 +49,21 @@ ACTIONS = {
 
 # The fields, in their order on screen: (key in the settings, label, kind of path). The module folder
 # is always shown; each other field shows only if the module's manifest declares it (its name there:
-# MANIFEST_FIELD; the game language goes with the game folder), under Required or Optional.
+# MANIFEST_FIELD), under Required or Optional.
 FIELDS = [
     ("module", "Module folder", "folder"),
     ("client", "Game folder", "folder"),
-    ("locale", "Game language", "choice"),
     ("server", "Worldserver folder", "folder"),
     ("sources", "AzerothCore sources", "folder"),
     ("mysql", "MySQL client", "file"),
 ]
-MANIFEST_FIELD = {"client": "game", "locale": "game", "server": "worldserver", "sources": "sources",
-                  "mysql": "mysql"}
+MANIFEST_FIELD = {"client": "game", "server": "worldserver", "sources": "sources", "mysql": "mysql"}
 # Fields found by the installer when left empty.
 FOUND_BY_ITSELF = ("sources", "mysql")
 # What goes in each field, said while it is empty.
 EMPTY = {
     "module": "The folder that holds installer.json.",
     "client": "The folder that holds Wow.exe and Data.",
-    "locale": "Read from the game folder.",
     "server": "The folder that holds worldserver.exe.",
     "sources": "Found by itself when left empty (the folder that holds src and modules).",
     "mysql": "Found by itself when left empty (mysql.exe of MySQL Server).",
@@ -111,36 +108,6 @@ def field_state(key, path):
     if os.path.isfile(path) and os.path.basename(path).lower() == "mysql.exe":
         return True, "mysql.exe found."
     return False, "Not mysql.exe."
-
-
-def game_languages(folder):
-    """([languages of the game folder, as the game writes them], the one the folder names itself or
-    None), or None for a folder that is not a game folder."""
-    if not folder:
-        return None
-    try:
-        client = core.Client(folder)
-    except (core.InstallerError, OSError):
-        return None
-    return (sorted(core.language_name(n) for n in client.languages.values()),
-            core.language_name(client.own_locale) if client.own_locale else None)
-
-
-def language_state(folder, chosen):
-    """(ok, text) of the game language, as field_state: the one the game folder names itself, or the one
-    chosen when it does not."""
-    found = game_languages(folder)
-    if found is None:
-        return None, EMPTY["locale"]
-    names, own = found
-    if not names:
-        return True, "No language folder in Data: the game reads Data alone."
-    if own:
-        return True, "Named by WTF\\Config.wtf." if len(names) > 1 else "The only language in Data."
-    if not chosen:
-        return False, ("Several languages, and WTF\\Config.wtf does not say which one the game uses: choose it, "
-                       "or start the game once.")
-    return True, "Chosen here: it must be the language the game uses."
 
 
 def module_fields(path):
@@ -216,7 +183,6 @@ class InstallerWindow(object):
         self.context = None           # (M, server, client, dbs, state) of the last check
         self.working = False
         self.filling = False          # fields being filled by the window itself
-        self.language_named = False   # the game language comes from the game folder, not from the user
         self.action = None
         core.output = lambda text: self.events.put(("log", text))
 
@@ -262,7 +228,6 @@ class InstallerWindow(object):
             var.trace_add("write", lambda *_, k=key: self.fields_changed(k))
             self.vars[key] = var
         self.place_fields()
-        self.refresh_languages()
         folders.bind("<Configure>", lambda e: self.wrap_notes(e.width))
         bar = ttk.Frame(folders)
         bar.grid(row=4, column=0, sticky="ew", pady=(8, 0))
@@ -368,17 +333,6 @@ class InstallerWindow(object):
             style.configure(name + ".TLabel", background=CARD, foreground=colour, font=("Segoe UI", 12, "bold"))
         style.configure("TEntry", fieldbackground=FIELD, foreground=TEXT, insertcolor=TEXT, padding=(6, 4))
         style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
-        # The language list: closed, like an entry; open, a list in the same colours.
-        style.configure("TCombobox", fieldbackground=FIELD, background=BUTTON, foreground=TEXT, arrowcolor=TEXT,
-                        padding=(6, 4))
-        style.map("TCombobox", fieldbackground=[("readonly", FIELD), ("disabled", FIELD)],
-                  foreground=[("disabled", MUTED)], background=[("disabled", CARD), ("active", BUTTON_HOVER)],
-                  arrowcolor=[("disabled", BORDER)], selectbackground=[("readonly", FIELD)],
-                  selectforeground=[("readonly", TEXT)], bordercolor=[("focus", ACCENT)],
-                  lightcolor=[("focus", ACCENT)])
-        for option, value in (("background", FIELD), ("foreground", TEXT), ("selectBackground", SELECTED),
-                              ("selectForeground", TEXT)):
-            self.root.option_add("*TCombobox*Listbox." + option, value)
         style.configure("TButton", background=BUTTON, foreground=TEXT, bordercolor=BUTTON, lightcolor=BUTTON,
                         darkcolor=BUTTON, padding=(14, 5))
         style.map("TButton", background=[("disabled", CARD), ("pressed", BORDER), ("active", BUTTON_HOVER)],
@@ -412,8 +366,8 @@ class InstallerWindow(object):
         self.module_title.configure(text=title)
         self.explanation.configure(text=text)
         self.action = action
-        if action:
-            self.action_button.configure(text=ACTIONS[action][0], style=ACTIONS[action][1])
+        # without an action, the button stays greyed out as Install
+        self.action_button.configure(text=ACTIONS[action or "install"][0], style=ACTIONS[action or "install"][1])
         self.update_buttons()
 
     def update_buttons(self):
@@ -499,64 +453,31 @@ class InstallerWindow(object):
                 w.grid_remove()
 
     def add_row(self, key, box, index, reason):
-        """One field in box, at row index: label, entry and button (or the list of the game's languages),
-        then the reason (optional field) and a line saying whether the path fits."""
+        """One field in box, at row index: label, entry and button, then the reason (optional field)
+        and a line saying whether the path fits."""
         label, kind = [(l, k) for f, l, k in FIELDS if f == key][0]
         optional = reason is not None
         prefix = "Optional" if optional else "Card"
-        widgets = [ttk.Label(box, text=label, style=prefix + "Field.TLabel", width=20)]
-        if kind == "choice":
-            widgets.append(ttk.Combobox(box, textvariable=self.vars[key], width=12))
-            widgets[1].bind("<<ComboboxSelected>>", lambda _: self.language_chosen())
-            self.list_languages(widgets[1])
-            widgets[1].grid(row=3 * index, column=1, sticky="w", padx=8, pady=(6, 0))
-        else:
-            widgets += [ttk.Entry(box, textvariable=self.vars[key]),
-                        ttk.Button(box, text="Browse...", command=lambda: self.browse(key, kind))]
-            widgets[1].bind("<Return>", lambda _: self.check())
-            widgets[1].grid(row=3 * index, column=1, sticky="ew", padx=8, pady=(6, 0))
-            widgets[2].grid(row=3 * index, column=2, pady=(6, 0))
+        widgets = [ttk.Label(box, text=label, style=prefix + "Field.TLabel", width=20),
+                   ttk.Entry(box, textvariable=self.vars[key]),
+                   ttk.Button(box, text="Browse...", command=lambda: self.browse(key, kind))]
+        widgets[1].bind("<Return>", lambda _: self.check())
         widgets[0].grid(row=3 * index, column=0, sticky="w", pady=(6, 0))
-        wrapped = []
+        widgets[1].grid(row=3 * index, column=1, sticky="ew", padx=8, pady=(6, 0))
+        widgets[2].grid(row=3 * index, column=2, pady=(6, 0))
         if optional:
             text = ttk.Label(box, text=reason, style="OptionalReason.TLabel", justify="left", wraplength=600)
             text.grid(row=3 * index + 1, column=1, columnspan=2, sticky="w", padx=8, pady=(2, 0))
-            wrapped.append(text)
+            widgets.append(text)
         note = ttk.Label(box, justify="left", wraplength=600)
         note.grid(row=3 * index + 2, column=1, columnspan=2, sticky="w", padx=8, pady=(2, 2))
-        wrapped.append(note)
-        self.rows[key] = {"widgets": widgets + wrapped, "wrapped": wrapped, "note": note, "optional": optional}
+        widgets.append(note)
+        self.rows[key] = {"widgets": widgets, "note": note, "optional": optional}
         self.show_note(key)
-
-    def list_languages(self, box):
-        """Fills the language list (box) with the game folder's languages; it can be opened only when the
-        folder does not name the language itself."""
-        names, own = game_languages(self.values()["client"]) or ([], None)
-        box.configure(values=names, state="disabled" if own or not names else "readonly")
-
-    def refresh_languages(self):
-        """After a change of game folder: the language list shows its languages, set to the one the folder
-        names itself; otherwise the user's choice stays if the folder holds it."""
-        names, own = game_languages(self.values()["client"]) or ([], None)
-        current = self.values()["locale"]
-        value = own or (current if current in names and not self.language_named else "")
-        self.language_named = bool(own)
-        if value != current:
-            filling, self.filling = self.filling, True
-            self.vars["locale"].set(value)
-            self.filling = filling
-        if "locale" in self.rows:
-            self.list_languages(self.rows["locale"]["widgets"][1])
-        self.show_note("locale")
-
-    def language_chosen(self):
-        self.rows["locale"]["widgets"][1].selection_clear()
-        if self.ready(quiet=True):
-            self.check()
 
     def wrap_notes(self, width):
         for row in self.rows.values():
-            for w in row["wrapped"]:
+            for w in row["widgets"][3:]:
                 w.configure(wraplength=max(300, width - 260))
         if self.notes_frame is not None:
             for w in self.notes_frame.grid_slaves(column=1):
@@ -566,7 +487,7 @@ class InstallerWindow(object):
         row = self.rows.get(key)
         if not row:
             return
-        ok, text = self.state_of(key)
+        ok, text = field_state(key, self.values()[key])
         prefix = "Optional" if row["optional"] else "Card"
         # An empty optional field says nothing more than its reason.
         if ok is None and row["optional"]:
@@ -596,8 +517,6 @@ class InstallerWindow(object):
             return
         if key == "module":
             self.place_fields()
-        if key == "client":
-            self.refresh_languages()
         self.show_note(key)
         if self.filling or self.working:
             return
@@ -609,11 +528,6 @@ class InstallerWindow(object):
     def values(self):
         return {key: var.get().strip().strip('"') for key, var in self.vars.items()}
 
-    def state_of(self, key):
-        """(ok, text) of a field's content (field_state, language_state)."""
-        v = self.values()
-        return language_state(v["client"], v["locale"]) if key == "locale" else field_state(key, v[key])
-
     def ready(self, quiet=False):
         """True if the fields shown hold the expected paths (a required field filled, unless the installer
         finds it by itself); otherwise says which one is wrong."""
@@ -621,11 +535,11 @@ class InstallerWindow(object):
             row = self.rows.get(key)
             if not row:
                 continue
-            ok, text = self.state_of(key)
+            ok = field_state(key, self.values()[key])[0]
             needed = not row["optional"] and key not in FOUND_BY_ITSELF
             if ok is False or (needed and ok is None):
                 if not quiet:
-                    self.show_state("unknown", "", "%s: %s" % (label, text))
+                    self.show_state("unknown", "", "%s: %s" % (label, field_state(key, self.values()[key])[1]))
                 return False
         return True
 
@@ -696,7 +610,7 @@ class InstallerWindow(object):
         def job():
             M = self.load_manifest(core.module_folder(v["module"]))
             server = core.open_server(M, v["server"], v["sources"])
-            client = core.Client(v["client"], v["locale"] or None) if "game" in M.fields else None
+            client = core.Client(v["client"]) if "game" in M.fields else None
             dbs = {}
             if core.uses_databases(M, server):
                 dbs = core.open_databases(server, v["mysql"] or core.find_mysql(server, self.settings))
@@ -725,21 +639,28 @@ class InstallerWindow(object):
                 "%s: %s" % (label, os.path.relpath(path, server.bin)
                            if label != "databases" and core.is_inside(path, server.bin) else path)
                 for label, path in core.folder_lines(M, server, client, dbs)
-                if label not in ("worldserver", "sources", "game", "game language")))
+                if label not in ("worldserver", "sources", "game")))
         self.fill_tree(state, client)
         title = "%s  (%s)" % (M.title, M.name) if M.title != M.name else M.name
         if state.strong():
             self.show_state("present", title, "Installed, in whole or in part. Remove takes away what is left: %s."
                             % removal_parts(M, dbs), "remove")
-        elif state.weak():
+        elif state.weak() and state.removable():
             self.show_state("conflict", title, "The items below carry the module's identifiers without proof they "
                                                "are its own: no install while they are there. If they are leftovers "
                                                "of this module, Remove leftovers takes away their database and DBC "
                                                "rows (never a game file).", "leftovers")
+        elif state.weak():
+            # nothing a removal of leftovers could take: no button
+            self.show_state("conflict", title, "The items below stand in the way and are not leftovers the "
+                                               "installer can remove: another archive of the game provides its own "
+                                               "version of a file of the module, or an official archive holds rows "
+                                               "with its identifiers. The installer never changes them: no install "
+                                               "while they are there.")
         else:
             self.show_state("absent", title, "Not installed. Install puts in place: %s."
                             % install_parts(M, server, client), "install")
-        self.write_log("%s: %s" % (M.name, {"remove": "present", "leftovers": "conflict",
+        self.write_log("%s: %s" % (M.name, {"remove": "present", "leftovers": "conflict", None: "conflict",
                                             "install": "not installed"}[self.action]))
 
     def fill_tree(self, state, client):
@@ -811,7 +732,7 @@ class InstallerWindow(object):
 
         def job():
             # Read again: the state may have changed since the check.
-            fresh = core.survey(M, server, core.Client(client.folder, client.locale) if client else None, dbs)
+            fresh = core.survey(M, server, core.Client(client.folder) if client else None, dbs)
             now = "remove" if fresh.strong() else "leftovers" if fresh.weak() else "install"
             if now != action:
                 raise core.InstallerError("the state changed since the check: check again")
