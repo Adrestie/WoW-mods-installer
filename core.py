@@ -35,6 +35,7 @@ identical file provided by another archive is never its own.
 """
 import argparse
 import array
+import copy
 import glob
 import json
 import os
@@ -309,6 +310,13 @@ class Client(object):
             m = re.search(r'^SET locale "(\w+)"', f.read(), re.M | re.I)
         return m.group(1) if m else ""
 
+    def in_language(self, name):
+        """The same game read in another of its languages (name: a language folder of Data)."""
+        view = copy.copy(self)
+        view.locale, view.own_locale = None, name
+        view.locale_dir = os.path.join(self.data, name)
+        return view
+
     def _own_locale(self):
         """The language folder the game folder names itself: the one of WTF\\Config.wtf, or the only one."""
         named = self.languages.get((self.config_locale or "").lower())
@@ -316,11 +324,11 @@ class Client(object):
 
     def language_problem(self):
         """Why the installer cannot tell which language folder the game reads, or None."""
-        if not self.languages:
-            return None
-        found = ", ".join(sorted(language_name(n) for n in self.languages.values()))
+        found = ", ".join(sorted(language_name(n) for n in self.languages.values())) or "none"
         if self.locale and self.locale.lower() not in self.languages:
             return "no %s language folder in %s (there: %s)" % (self.locale, self.data, found)
+        if not self.languages:
+            return None
         if self.locale and self.own_locale and self.locale.lower() != self.own_locale.lower():
             return "the game uses %s (%s), not %s" % (
                 language_name(self.own_locale),
@@ -382,10 +390,11 @@ class Client(object):
     def forget(self, path):
         self._open.pop(path, None)
 
-    def winner(self, name, below=None):
+    def winner(self, name, below=None, skip=None):
         """The archive the game reads this file from; below=path: the winner
-        among the archives read before that one (all of them, for an archive the game does not load)."""
-        paths = [p for r, p in self.archives()]
+        among the archives read before that one (all of them, for an archive the game does not load);
+        skip=path: the winner without that archive."""
+        paths = [p for r, p in self.archives() if skip is None or os.path.normcase(p) != os.path.normcase(skip)]
         if below is not None and below in paths:
             paths = paths[:paths.index(below)]
         for path in reversed(paths):
@@ -556,6 +565,79 @@ def dbc_remove(raw, name, ids, text):
                 end = max(end, end_of(v))
         strings = strings[:min(end, length)]
     return dbc_join(fields, size, kept, strings), n
+
+
+def localized_strings(d):
+    """The first field of each localized string of the DBC entry d: 16 text fields in a row, one per
+    language of the client, then a field of flags."""
+    return sorted(i for i in d.text if i - 1 not in d.text and i + 16 not in d.text
+                  and all(i + k in d.text for k in range(16)))
+
+
+def _dbc_values(raw, name):
+    """(fields, row size in words, every field of every row, string block) of a DBC file whose fields
+    are all 4 bytes; None for another one (byte fields)."""
+    fields, size, recs, strings = dbc_split(raw, name)
+    if size % 4:
+        return None
+    values = array.array("I")
+    values.frombytes(raw[20:20 + len(recs) * size])
+    return fields, size // 4, values, strings
+
+
+def _dbc_content(parts, d, localized):
+    """What a DBC file holds besides its localized strings (parts: _dbc_values): its layout, every field
+    with the localized strings and the other text fields set to 0, the other text fields' strings."""
+    fields, words, values, strings = parts
+    count = len(values) // words
+    others = sorted(i for i in d.text if not any(a <= i < a + 16 for a in localized))
+    texts = [read_string(strings, values[r * words + i]) for r in range(count) for i in others]
+    masked = array.array("I", values)
+    for i in [a + k for a in localized for k in range(16)] + others:
+        masked[i::words] = array.array("I", [0]) * count
+    return fields, words, masked, texts
+
+
+def game_copy(client, name, d, skip):
+    """The DBC file an install copies whole into the archive skip, made to serve every language of the
+    game folder: the file as the game reads it without that archive, its localized strings filled from
+    each language's own file (a language's file fills only its own slot of each string). The languages
+    taken are those whose file holds the same rows and values; the first by name gives the rest."""
+    current = client.open(client.winner(name, skip=skip)).read(name)
+    localized = localized_strings(d)
+    parts = _dbc_values(current, name)
+    if not localized or parts is None or len(client.languages) < 2:
+        return current
+    reference = _dbc_content(parts, d, localized)
+    group = []                  # (the game read in a language, the archive it reads the file from)
+    for language in sorted(client.languages.values(), key=str.lower):
+        view = client.in_language(language)
+        w = view.winner(name, skip=skip)
+        theirs = _dbc_values(view.open(w).read(name), name) if w else None
+        if theirs is not None and _dbc_content(theirs, d, localized) == reference:
+            group.append((view, w))
+    if len(group) < 2:
+        return current
+    fields, words, values, strings = _dbc_values(group[0][0].open(group[0][1]).read(name), name)
+    appended = {}
+    for view, w in group[1:]:
+        their_values, their_strings = _dbc_values(view.open(w).read(name), name)[2:]
+        for a in localized:
+            for k in range(16):
+                column = their_values[a + k::words]
+                if not any(column):
+                    continue
+                ours = values[a + k::words]
+                for row, offset in enumerate(column):
+                    if offset and not ours[row]:
+                        end = their_strings.find(b"\0", offset)
+                        text = bytes(their_strings[offset:end if end >= 0 else len(their_strings)])
+                        if text not in appended:
+                            appended[text] = len(strings)
+                            strings.extend(text + b"\0")
+                        values[row * words + a + k] = appended[text]
+    return b"WDBC" + struct.pack("<4I", len(values) // words, fields, words * 4, len(strings)) + \
+        values.tobytes() + bytes(strings)
 
 
 def write_file_atomic(path, content):
@@ -976,7 +1058,9 @@ def install_plan(M, client, server):
                     raise InstallerError("the game reads %s from %s, read after %s: the module's rows would "
                                          "stay hidden" % (name, w, top))
                 where[name] = top
-                sizes[name] = client.open(w).size(name) + sum(
+                # a copy made for every language holds at most each language's whole file
+                copies = len(client.languages) if w != top and localized_strings(d) else 1
+                sizes[name] = client.open(w).size(name) * max(1, copies) + sum(
                     4 * d.fields + sum(len(v.encode("utf-8")) + 1 if isinstance(v, str) else
                                        len(v) if isinstance(v, bytes) else 0 for v in r) for r in d.client)
     for name, source in M.game_files.items():
@@ -1222,7 +1306,7 @@ def remove_tree(d):
     shutil.rmtree(d, onexc=force)
 
 
-def archive_is_redundant(client, path):
+def archive_is_redundant(client, path, defs):
     """True if the archive holds nothing, or only DBC files each identical to the
     one the game would read without it: it no longer changes anything (the
     archive an install created on a client that had none). Only an archive
@@ -1243,8 +1327,13 @@ def archive_is_redundant(client, path):
         return False
     for n in present:
         below = client.winner(n, below=path)
-        if below is None or client.open(below).read(n) != a.read(n):
+        if below is None:
             return False
+        if client.open(below).read(n) != a.read(n):
+            # or the copy an install makes of it for every language (DBC files of the module: defs)
+            d = defs.get(n.replace("/", "\\").split("\\")[-1].lower())
+            if d is None or game_copy(client, n, d, path) != a.read(n):
+                return False
     return True
 
 
@@ -1320,9 +1409,11 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True):
             new, n = dbc_remove(a.read(name), name, ids, defs[f].text)
             if not n:
                 continue
-            # A file the install copied whole goes, once it says again what the game reads below.
+            # A file the install copied whole goes, once it says again what the game reads below
+            # (merged in every language, or as one language reads it).
             below = client.winner(name, below=path)
-            if f.lower() in added_by.get(path, ()) and below and client.open(below).read(name) == new:
+            if f.lower() in added_by.get(path, ()) and below and \
+                    (client.open(below).read(name) == new or game_copy(client, name, defs[f], path) == new):
                 copies.add(name)
                 say("  %s, %s: %d row(s) removed, and the copy the install added" % (path, f, n))
             else:
@@ -1337,7 +1428,7 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True):
         if written or leaving:
             mpq_archive.write_into_archive(path, written, remove=leaving)
             client.forget(path)
-            if archive_is_redundant(client, path):
+            if archive_is_redundant(client, path, {f.lower(): d for f, d in defs.items()}):
                 client.forget(path)
                 os.remove(path)
                 say("  %s held nothing but unchanged copies: archive deleted" % path)
@@ -1474,9 +1565,11 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
         name = "DBFilesClient\\" + d.file
         w = client.winner(name)
         target = where[name]
-        writes.setdefault(target, {})[name] = dbc_add(client.open(w).read(name), name, d, d.client)
+        # A file read from below is copied whole, made to serve every language of the game.
+        source = client.open(w).read(name) if target == w else game_copy(client, name, d, target)
+        writes.setdefault(target, {})[name] = dbc_add(source, name, d, d.client)
         receipts.setdefault(target, ([], {}, set()))[1][d.file] = d.client_ids
-        if target != w:                         # the file is read from below: it is copied whole
+        if target != w:
             receipts[target][2].add(d.file)
     if M.game_files:
         target = where[next(iter(M.game_files))]

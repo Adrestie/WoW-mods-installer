@@ -58,9 +58,13 @@ Everything a module puts into the game goes into one archive, the patch the
 game reads last, created if there is none: `Data\patch-Z.MPQ`, or
 `patch-xxXX-Z.MPQ` in the language folder for a Russian or Chinese client
 (ruRU, zhCN, zhTW), whose language folder the game reads after `Data`. No other
-archive is written into. When that archive has no room left (hash table full,
-or a v1 archive past 4 GB), or when the game reads one of the module's DBC
-files from an archive read after it, it refuses, before writing anything.
+archive is written into. A DBC file the game reads from another archive is
+copied whole into it, with the texts of every language folder of `Data`: the
+same copy serves the game in each of these languages, except a Russian or
+Chinese one, whose folder the game reads after `Data`. When that archive has
+no room left (hash table full, or a v1 archive past 4 GB), or when the game
+reads one of the module's DBC files from an archive read after it, it
+refuses, before writing anything.
 
 Before a game archive changes, it offers to copy it beside itself
 (`<name>.backup-<date>-<time>`), ticked by default, once it has checked that the

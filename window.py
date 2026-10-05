@@ -134,7 +134,7 @@ def language_state(folder, chosen):
         return None, EMPTY["locale"]
     names, own = found
     if not names:
-        return False, "No language folder with .MPQ archives in Data."
+        return True, "No language folder in Data: the game reads Data alone."
     if own:
         return True, "Named by WTF\\Config.wtf." if len(names) > 1 else "The only language in Data."
     if not chosen:
