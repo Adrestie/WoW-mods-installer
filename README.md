@@ -54,17 +54,17 @@ Only the archives the game loads count: in `Data`, the base archives,
 archives, `patch-xxXX.MPQ` and `patch-xxXX-?.MPQ`. Another `.mpq` file is never
 written into; what a module left in one is removed with the rest.
 
-Everything a module puts into the game goes into one archive, created if
-there is none: `Data\patch-Z.MPQ`, whatever language the game is set to. A
-DBC file the game reads from another archive is copied whole into it, with the
-texts of every language folder of `Data`: the same copy serves each language.
-Only a client whose language folders are all Russian or Chinese (ruRU, zhCN,
-zhTW), which the game reads after `Data`, gets `patch-xxXX-Z.MPQ` in its
-language folder instead; mixed with other languages, these keep reading their
-own files. No other archive is written into. When that archive has no room
-left (hash table full, or a v1 archive past 4 GB), or when the game reads one
-of the module's DBC files from an archive read after it, it refuses, before
-writing anything.
+A module works whatever languages the client holds, and the player reads its
+texts in the language of the game. Everything it puts into the game goes into
+`Data\patch-Z.MPQ`, created if there is none, which the game reads last in
+deDE, enGB, enUS, esES, esMX, frFR and koKR. Wow.exe reads a ruRU, zhCN or zhTW
+language folder after `Data`: each one present also gets the same content in
+its own `patch-xxXX-Z.MPQ`. No other archive is written into. A DBC file the
+game reads from another archive is copied whole, with the texts of every
+language folder of `Data`. When one of these archives has no room left (hash
+table full, or a v1 archive past 4 GB), or when the game reads one of the
+module's DBC files from an archive read after it, it refuses, before writing
+anything.
 
 Before a game archive changes, it offers to copy it beside itself
 (`<name>.backup-<date>-<time>`), ticked by default, once it has checked that the

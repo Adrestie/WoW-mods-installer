@@ -10,7 +10,8 @@ import json
 import os
 import re
 
-from core import InstallerError, MANIFEST_NAME, dbc_split, module_sql_files, read_version, row_values, sql_list
+from core import InstallerError, MANIFEST_NAME, dbc_split, in_every_language, localized_strings, module_sql_files, \
+    read_version, row_values, sql_list
 
 FORMAT = "wow-mods-installer/1"
 # The folders a module may need besides its own: the game, the worldserver, the AzerothCore sources
@@ -24,11 +25,16 @@ class DbcDef(object):
     fields: field count; text: indices of the text fields; client / server:
     the rows to write on that side (None: that side is not touched), each row
     being the list of its values, a string for a text field, an integer
-    otherwise."""
+    otherwise. Rows are written with each localized string in every language
+    of the client (in_every_language); client_given / server_given keep them
+    as declared."""
 
     def __init__(self, file, fields, text, client, server):
         self.file, self.fields, self.text = file, fields, text
-        self.client, self.server = client, server
+        self.localized = localized_strings(text)
+        self.client_given, self.server_given = client, server
+        self.client, self.server = [None if rows is None else [in_every_language(r, self.localized) for r in rows]
+                                    for rows in (client, server)]
         self.client_ids = [r[0] for r in client or []]
         self.server_ids = [r[0] for r in server or []]
         self.ids = sorted(set(self.client_ids) | set(self.server_ids))

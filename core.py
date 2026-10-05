@@ -354,11 +354,12 @@ class Client(object):
     def forget(self, path):
         self._open.pop(path, None)
 
-    def winner(self, name, below=None, skip=None):
+    def winner(self, name, below=None, skip=()):
         """The archive the game reads this file from; below=path: the winner
         among the archives read before that one (all of them, for an archive the game does not load);
-        skip=path: the winner without that archive."""
-        paths = [p for r, p in self.archives() if skip is None or os.path.normcase(p) != os.path.normcase(skip)]
+        skip=[paths]: the winner without those archives."""
+        skipped = {os.path.normcase(p) for p in skip}
+        paths = [p for r, p in self.archives() if os.path.normcase(p) not in skipped]
         if below is not None and below in paths:
             paths = paths[:paths.index(below)]
         for path in reversed(paths):
@@ -367,19 +368,28 @@ class Client(object):
                 return path
         return None
 
-    def top_archive(self):
-        """The one archive installs write into, the patch the game reads last: Data\\patch-Z.MPQ,
-        or patch-xxXX-Z.MPQ of the language folder when the game reads that folder after Data
-        (ruRU, zhCN, zhTW). The one there (any letter case), or the path of the one to create."""
-        candidates = [os.path.join(self.data, NEW_ARCHIVE_NAME)]
-        if self.locale_dir:
-            candidates.append(os.path.join(self.locale_dir,
-                                           "patch-%s-Z.MPQ" % os.path.basename(self.locale_dir)))
-        top = max(candidates, key=self.rank)
-        for r, p in self.archives():
-            if os.path.normcase(p) == os.path.normcase(top):
-                return p
-        return top
+    def write_targets(self):
+        """[(archive, the game read as it reads that archive)]: the archives installs write into, each
+        the patch read last by the languages it serves; the one there (any letter case), or the path of
+        the one to create. Data\\patch-Z.MPQ serves a game without language folder and every language
+        whose folder Wow.exe reads before Data (deDE, enGB, enUS, esES, esMX, frFR, koKR); a language
+        whose folder it reads after Data (ruRU, zhCN, zhTW) overrides Data with its own patches, and
+        gets patch-xxXX-Z.MPQ in its folder."""
+        names = sorted(self.languages.values(), key=str.lower)
+        before = [n for n in names if n.lower() < "patch"]
+        targets = [(os.path.join(self.data, NEW_ARCHIVE_NAME), self.in_language(before[0]) if before else self)] \
+            if before or not names else []
+        targets += [(os.path.join(self.data, n, "patch-%s-Z.MPQ" % n), self.in_language(n))
+                    for n in names if n.lower() > "patch"]
+        return [(next((p for r, p in view.archives() if os.path.normcase(p) == os.path.normcase(t)), t), view)
+                for t, view in targets]
+
+    def view_of(self, path):
+        """The game read as it reads this archive: in its folder's language, or as itself for Data."""
+        folder = os.path.normcase(os.path.dirname(path))
+        name = next((n for n in self.languages.values()
+                     if os.path.normcase(os.path.join(self.data, n)) == folder), None)
+        return self.in_language(name) if name else self
 
 
 # ------------------------------------------------------------------ DBC
@@ -451,20 +461,24 @@ def row_bytes(values, strings, text, size, name):
     return bytes(out)
 
 
-def dbc_survey(raw, name, d, rows):
+def dbc_survey(raw, name, d, rows, given=None):
     """(our ids, conflicting ids): rows of this DBC that carry one of the module's
     identifiers, identical to the module's rows or not.
 
-    d: the manifest's DBC entry; rows: the module's rows for this side."""
+    d: the manifest's DBC entry; rows: the module's rows for this side; given: the same rows as the
+    manifest declares them, also the module's (written so by installers that did not fill every
+    language)."""
     fields, size, recs, strings = dbc_split(raw, name)
     if fields != d.fields:
         raise InstallerError("%s has %d fields, %d expected: unexpected client version" % (name, fields, d.fields))
     expected = {r[0]: r for r in rows}
+    declared = {r[0]: r for r in given or []}
     ours, others = [], []
     for r in recs:
         i = _row_id(r)
         if i in expected:
-            (ours if row_values(r, strings, d.text) == expected[i] else others).append(i)
+            values = row_values(r, strings, d.text)
+            (ours if values == expected[i] or values == declared.get(i) else others).append(i)
     return sorted(ours), sorted(others)
 
 
@@ -531,11 +545,22 @@ def dbc_remove(raw, name, ids, text):
     return dbc_join(fields, size, kept, strings), n
 
 
-def localized_strings(d):
-    """The first field of each localized string of the DBC entry d: 16 text fields in a row, one per
-    language of the client, then a field of flags."""
-    return sorted(i for i in d.text if i - 1 not in d.text and i + 16 not in d.text
-                  and all(i + k in d.text for k in range(16)))
+def localized_strings(text):
+    """The first field of each localized string among these text fields: 16 text fields in a row, one
+    per language of the client (0 enUS, 1 koKR, 2 frFR, 3 deDE, 4 zhCN, 5 zhTW, 6 esES, 7 esMX,
+    8 ruRU), then a field of flags."""
+    return sorted(i for i in text if i - 1 not in text and i + 16 not in text and all(i + k in text for k in range(16)))
+
+
+def in_every_language(row, localized):
+    """The row with each of its localized strings (first fields: localized) given in every language: a
+    language the module does not translate takes the English text, or the first text given without one."""
+    row = list(row)
+    for a in localized:
+        texts = row[a:a + 16]
+        fallback = texts[0] or next((t for t in texts if t), "")
+        row[a:a + 16] = [t or fallback for t in texts]
+    return row
 
 
 def _dbc_values(raw, name):
@@ -563,12 +588,14 @@ def _dbc_content(parts, d, localized):
 
 
 def game_copy(client, name, d, skip):
-    """The DBC file an install copies whole into the archive skip, made to serve every language of the
-    game folder: the file as the game reads it without that archive, its localized strings filled from
-    each language's own file (a language's file fills only its own slot of each string). The languages
-    taken are those whose file holds the same rows and values; the first by name gives the rest."""
+    """The DBC file an install copies whole into an archive, made to serve every language of the game
+    folder: the file as the game (client: read as that archive serves it) reads it without the archives
+    skip (all those installs write into, so that removal finds the same copy whatever order it goes in),
+    its localized strings filled from each language's own file (a language's file fills only its own
+    slot of each string). The languages taken are those whose file holds the same rows and values; the
+    first by name gives the rest."""
     current = client.open(client.winner(name, skip=skip)).read(name)
-    localized = localized_strings(d)
+    localized = d.localized
     parts = _dbc_values(current, name)
     if not localized or parts is None or len(client.languages) < 2:
         return current
@@ -1013,40 +1040,41 @@ def has_sql(M):
 
 
 def install_plan(M, client, server):
-    """{file name: archive}: where an install writes each DBC and game file -- all into the top
-    archive (Client.top_archive), a DBC read from where the game reads it. Refused before anything
-    is written when that archive has no room left (hash table full, a v1 archive past 4 GB), or
-    when the game reads one of the module's DBC files from an archive read after it."""
-    top = client.top_archive()
-    where, sizes = {}, {}
-    for d in installed_dbc(M, server):
-        if d.client is not None:
+    """[(archive, the game read as it reads it)]: the archives an install writes the module's DBC rows
+    and game files into, each of them all (Client.write_targets); none for a module without game part.
+    Refused before anything is written when one has no room left (hash table full, a v1 archive past
+    4 GB), or when the game reads one of the module's DBC files from an archive read after it."""
+    dbc = [d for d in installed_dbc(M, server) if d.client is not None]
+    if not dbc and not M.game_files:
+        return []
+    plan = client.write_targets()
+    for target, view in plan:
+        sizes = {}
+        for d in dbc:
             name = "DBFilesClient\\" + d.file
-            w = client.winner(name)
-            if w:
-                if client.rank(w) > client.rank(top):
-                    raise InstallerError("the game reads %s from %s, read after %s: the module's rows would "
-                                         "stay hidden" % (name, w, top))
-                where[name] = top
-                # a copy made for every language holds at most each language's whole file
-                copies = len(client.languages) if w != top and localized_strings(d) else 1
-                sizes[name] = client.open(w).size(name) * max(1, copies) + sum(
-                    4 * d.fields + sum(len(v.encode("utf-8")) + 1 if isinstance(v, str) else
-                                       len(v) if isinstance(v, bytes) else 0 for v in r) for r in d.client)
-    for name, source in M.game_files.items():
-        where[name] = top
-        sizes[name] = os.path.getsize(source)
-    if sizes:
+            w = view.winner(name)
+            if not w:
+                continue
+            if view.rank(w) > view.rank(target):
+                raise InstallerError("the game reads %s from %s, read after %s: the module's rows would stay "
+                                     "hidden" % (name, w, target))
+            # a copy made for every language holds at most each language's whole file
+            copies = len(client.languages) if w != target and d.localized else 1
+            sizes[name] = view.open(w).size(name) * max(1, copies) + sum(
+                4 * d.fields + sum(len(v.encode("utf-8")) + 1 if isinstance(v, str) else
+                                   len(v) if isinstance(v, bytes) else 0 for v in r) for r in d.client)
+        for name, source in M.game_files.items():
+            sizes[name] = os.path.getsize(source)
         sizes[receipt_name(M)] = sum(len(n) + 8 for n in sizes) + 1024
-        if os.path.exists(top) and not mpq_archive.has_room(top, sizes):
+        if os.path.exists(target) and not mpq_archive.has_room(target, sizes):
             raise InstallerError("%s has no room left for this module (hash table full, or a v1 archive "
-                                 "past 4 GB)" % top)
-    return where
+                                 "past 4 GB)" % target)
+    return plan
 
 
 def install_targets(M, client, server):
     """The archives an install writes into, existing or to be created."""
-    return sorted(set(install_plan(M, client, server).values())) if client else []
+    return sorted(target for target, view in install_plan(M, client, server)) if client else []
 
 
 def survey(M, server, client, dbs):
@@ -1077,7 +1105,7 @@ def survey(M, server, client, dbs):
         p = os.path.join(server.dbc, d.file)
         if os.path.isfile(p):
             with open(p, "rb") as f:
-                ours, others = dbc_survey(f.read(), p, d, d.server)
+                ours, others = dbc_survey(f.read(), p, d, d.server, d.server_given)
             if ours:
                 s.server_dbc.append((p, d.file, ours))
             if others:
@@ -1124,7 +1152,7 @@ def survey_game(M, client, s, installed):
                 if path == client.winner(name):
                     raise dbc_layout_error(client, name, path, fields, d)
                 continue
-            ours, others = dbc_survey(raw, name, d, d.client)
+            ours, others = dbc_survey(raw, name, d, d.client, d.client_given)
             named = set((receipt or {}).get("dbc", {}).get(d.file, []))
             mine = sorted(set(ours) | (set(others) & named))
             others = [i for i in others if i not in named]
@@ -1151,18 +1179,18 @@ def survey_game(M, client, s, installed):
                 if w != client.winner(name):
                     continue
                 raise dbc_layout_error(client, name, w, fields, d)
-            ours, others = dbc_survey(raw, name, d, d.client)
+            ours, others = dbc_survey(raw, name, d, d.client, d.client_given)
             if others:
                 s.client_conflicts.append((w, d.file, others))
     mine = {(c.lower(), n.lower()) for c, n in s.files}
-    target = os.path.normcase(client.top_archive())
+    targets = {os.path.normcase(t) for t, view in client.write_targets()}
     for name, source in M.game_files.items():
         for w in sorted({view.winner(name) for view in views} - {None}):
             if archive_rank(os.path.basename(w))[1] or (w.lower(), name.lower()) in mine:
                 continue
             # Replaced on purpose: the other archive's version is shadowed, never overwritten --
-            # unless it sits in the very archive the module writes into.
-            if name.lower() in M.replaced and os.path.normcase(w) != target:
+            # unless it sits in an archive the module writes into.
+            if name.lower() in M.replaced and os.path.normcase(w) not in targets:
                 continue
             with open(source, "rb") as f:
                 if client.open(w).read(name) != f.read():
@@ -1315,7 +1343,8 @@ def copy_unchanged(client, name, d, path, content):
         return False
     if any(client.open(w).read(name) == content for w in readings):
         return True
-    return d is not None and game_copy(client, name, d, path) == content
+    targets = [path] + [t for t, v in client.write_targets()]
+    return d is not None and game_copy(client.view_of(path), name, d, targets) == content
 
 
 def removal_plan(M, state, leftovers=False):
@@ -1533,25 +1562,25 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
     if refusals and not patch_exe:
         raise InstallerError(refusal_text(client, refusals) + ": allow it (--patch-wow-exe in the console)")
 
-    # 1. Game: each DBC, as the game reads it, and each game file into the top archive,
-    #    with a receipt.
-    where = install_plan(M, client, server) if client else {}
+    # 1. Game: each DBC, as the game reads it, and each game file into every archive installs write
+    #    into (one for the languages Data serves, one for each language read after Data), with a receipt.
     writes, created, receipts = {}, set(), {}
-    for d in installed:
-        if d.client is None:
-            continue
-        name = "DBFilesClient\\" + d.file
-        w = client.winner(name)
-        target = where[name]
-        # A file read from below is copied whole, made to serve every language of the game.
-        source = client.open(w).read(name) if target == w else game_copy(client, name, d, target)
-        writes.setdefault(target, {})[name] = dbc_add(source, name, d, d.client)
-        receipts.setdefault(target, ([], {}, set()))[1][d.file] = d.client_ids
-        if target != w:
-            receipts[target][2].add(d.file)
-    if M.game_files:
-        target = where[next(iter(M.game_files))]
-        a = client.open(target) if os.path.exists(target) else None
+    plan = install_plan(M, client, server) if client else []
+    for target, view in plan:
+        for d in installed:
+            if d.client is None:
+                continue
+            name = "DBFilesClient\\" + d.file
+            w = view.winner(name)
+            if w is None:
+                raise InstallerError("no game archive contains %s (game read as %s reads it)" % (name, target))
+            # A file read from below is copied whole, made to serve every language of the game.
+            source = view.open(w).read(name) if w == target else game_copy(view, name, d, [t for t, v in plan])
+            writes.setdefault(target, {})[name] = dbc_add(source, name, d, d.client)
+            receipts.setdefault(target, ([], {}, set()))[1][d.file] = d.client_ids
+            if w != target:
+                receipts[target][2].add(d.file)
+        a = view.open(target) if M.game_files and os.path.exists(target) else None
         for name, source in sorted(M.game_files.items()):
             # already in that archive (identical, or it would be a conflict): not ours
             if a is not None and a.contains(name):
@@ -1737,6 +1766,8 @@ def missing_after_install(M, server, client, dbs):
         there = shared_version(c, d) if os.path.isdir(d) else None
         if there is None or there < shared_version(c, c["source"]):
             missing.append("%s, version %d or newer" % (d, shared_version(c, c["source"])))
+    # The game, read as each archive installs write into serves it (every language).
+    views = [view for target, view in client.write_targets()] if client else []
     for dd in installed_dbc(M, server):
         if dd.server is not None:
             p = os.path.join(server.dbc, dd.file)
@@ -1745,14 +1776,17 @@ def missing_after_install(M, server, client, dbs):
                     missing.append("%s rows (server)" % dd.file)
         if dd.client is not None:
             name = "DBFilesClient\\" + dd.file
-            w = client.winner(name)
-            if w is None or len(dbc_survey(client.open(w).read(name), name, dd, dd.client)[0]) != len(dd.client):
-                missing.append("%s rows in the archive the game reads" % dd.file)
+            for view in views:
+                w = view.winner(name)
+                if w is None or len(dbc_survey(view.open(w).read(name), name, dd, dd.client)[0]) != len(dd.client):
+                    missing.append("%s rows in the archive the game reads (%s)" % (dd.file, w))
     for name, source in M.game_files.items():
-        w = client.winner(name)
         with open(source, "rb") as f:
-            if w is None or client.open(w).read(name) != f.read():
-                missing.append("%s in the archive the game reads" % name)
+            content = f.read()
+        for view in views:
+            w = view.winner(name)
+            if w is None or view.open(w).read(name) != content:
+                missing.append("%s in the archive the game reads (%s)" % (name, w))
     # The SQL a package for the game applied itself (a server module's waits for the updater).
     if not M.server_module:
         for key, desc in sorted(M.databases.items()):

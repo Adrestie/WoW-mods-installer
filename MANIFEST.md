@@ -166,6 +166,13 @@ One entry per DBC file:
 module or not: rows are compared by content, strings as text, and a string
 field read as a number would never match.
 
+A localized string is 16 text fields in a row, one per language of the game
+(0 enUS, 1 koKR, 2 frFR, 3 deDE, 4 zhCN, 5 zhTW, 6 esES, 7 esMX, 8 ruRU), then
+a field of flags. A module gives the English text and each translation it
+has; the installer writes the English text into every language left empty,
+so that no game shows an empty name. A translation is added to the module by
+filling its language's field.
+
 A few files hold byte fields besides 4-byte ones (`SpellChainEffects.dbc`: 48
 fields in 177 bytes). Their rows are read as 4-byte words followed by the
 bytes left over; `fields` is still the count of the file's header, the rows
@@ -173,8 +180,8 @@ come from a reduced DBC, and a text field must be one of the words.
 
 On install, the server file gets the rows appended. On the game side, the file
 is read from the archive the game reads it from and written, rows appended,
-into the archive the game reads last (`Data\patch-Z.MPQ`, or
-`patch-xxXX-Z.MPQ` of the language folder for ruRU, zhCN and zhTW; see the
+into each archive the game reads last (`Data\patch-Z.MPQ`, and
+`patch-xxXX-Z.MPQ` of each ruRU, zhCN or zhTW language folder; see the
 README). On removal, the rows go, and so do the strings the install appended
 at the end of the file.
 
