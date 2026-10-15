@@ -2,7 +2,7 @@
 """The installer's window (MIT licence).
 
 The user picks the module and the folders, reads what is in place, and
-installs or removes with one button. The work runs in a background thread;
+installs, updates or removes with one button. The work runs in a background thread;
 what the engine says goes to the log at the bottom."""
 import json
 import os
@@ -43,6 +43,7 @@ BADGES = {
 # Action buttons: (label, style name, colour, colour under the mouse).
 ACTIONS = {
     "install": ("Install", "Install.TButton", "#2f8f4e", "#37a65b"),
+    "update": ("Update", "Update.TButton", "#3b6fd4", "#4a7fe0"),
     "remove": ("Remove", "Remove.TButton", "#c94141", "#d95454"),
     "leftovers": ("Remove leftovers", "Leftovers.TButton", "#c7771f", "#d98a2e"),
 }
@@ -159,6 +160,13 @@ def removal_parts(M, dbs):
     return "game files, addons and DBC rows" + (", database rows" if dbs else "")
 
 
+def update_kept(M, kept):
+    """What an update keeps, in words (kept: core.kept_text)."""
+    parts = (["its settings (%s)" % M.conf["file"]] if M.conf else []) + \
+        (["the players' data: %s" % kept] if kept else [])
+    return " and ".join(parts) if parts else "nothing of the installed version"
+
+
 def dark_title_bar(window):
     """Asks Windows for a dark title bar (Windows 10 20H1 and later; ignored elsewhere)."""
     try:
@@ -227,7 +235,7 @@ class InstallerWindow(object):
         outer = ttk.Frame(root, padding=(20, 16, 20, 12))
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text="WoW-mods installer", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(outer, text="Installs a module, or removes it when it is present.",
+        ttk.Label(outer, text="Installs a module; updates or removes it when it is present.",
                   style="Hint.TLabel").pack(anchor="w", pady=(0, 12))
 
         # Folders: the module folder, then the fields its manifest declares, required ones in the first
@@ -285,6 +293,9 @@ class InstallerWindow(object):
         self.module_title.pack(side="left", padx=12)
         self.action_button = ttk.Button(head, text="Install", style="Install.TButton", command=self.act)
         self.action_button.pack(side="right")
+        # shown only when the module is present: this package replaces it, players' data kept
+        self.update_button = ttk.Button(head, text=ACTIONS["update"][0], style=ACTIONS["update"][1],
+                                        command=lambda: self.act("update"))
         # shown only when another mod's archives are in conflict with the module
         self.mods = []
         self.mods_button = ttk.Button(head, text="Disable the other mod...", style="Accent.TButton",
@@ -410,6 +421,10 @@ class InstallerWindow(object):
         self.action = action
         # without an action, the button stays greyed out as Install
         self.action_button.configure(text=ACTIONS[action or "install"][0], style=ACTIONS[action or "install"][1])
+        if action == "remove":
+            self.update_button.pack(side="right", padx=(0, 10))
+        else:
+            self.update_button.pack_forget()
         if kind == "conflict" and self.mods:
             self.mods_button.pack(side="right", padx=(0, 10))
         else:
@@ -419,6 +434,7 @@ class InstallerWindow(object):
     def update_buttons(self):
         self.check_button.configure(state="disabled" if self.working else "normal")
         self.action_button.configure(state="normal" if self.action and not self.working else "disabled")
+        self.update_button.configure(state="disabled" if self.working else "normal")
         self.mods_button.configure(state="disabled" if self.working else "normal")
 
     def dialog(self, title, text, buttons, kind="info", focus=0, option=None):
@@ -756,8 +772,10 @@ class InstallerWindow(object):
                     ".disabled and the game no longer loads them. This does not uninstall that mod."
                     % (len(self.mods), "s" if len(self.mods) > 1 else "")) if self.mods else ""
         if state.strong():
-            self.show_state("present", title, "Installed, in whole or in part. Remove takes away what is left: %s."
-                            % removal_parts(M, dbs), "remove")
+            kept = core.kept_text(M)
+            self.show_state("present", title, "Installed, in whole or in part. Update replaces it with this package "
+                            "and keeps %s. Remove takes away what is left: %s."
+                            % (update_kept(M, kept), removal_parts(M, dbs)), "remove")
         elif state.weak() and state.removable():
             self.show_state("conflict", title, ("The items below carry the module's identifiers without proof they "
                                                 "are its own: no install while they are there. If they are "
@@ -816,20 +834,28 @@ class InstallerWindow(object):
         self.write_log("")
         self.work("Disabling...", job, lambda result: self.check())
 
-    def act(self):
-        if self.working or not self.context or not self.action:
+    def act(self, chosen=None):
+        """chosen: "update" for the Update button; otherwise the action the check showed."""
+        if self.working or not self.context or not (chosen or self.action):
             return
         M, server, client, dbs, state = self.context
-        action = self.action
+        action = chosen or self.action
         cancel = ("Cancel", False, "TButton")
-        refusals = core.wow_exe_refusals(M, client) if action == "install" else []
+        refusals = core.wow_exe_refusals(M, client) if action in ("install", "update") and client else []
         if any(s != "original" for _, s in refusals):
-            self.dialog("Cannot install %s" % M.title, core.refusal_text(client, refusals)[0].upper()
+            self.dialog("Cannot %s %s" % (action, M.title), core.refusal_text(client, refusals)[0].upper()
                         + core.refusal_text(client, refusals)[1:] + ".", [("Close", None, "TButton")], kind="error")
             return
+        if action == "update":
+            why = core.update_refusal(M, client, state, patch_exe=True)
+            if why:
+                self.dialog("Cannot update %s" % M.title, why[0].upper() + why[1:] + ".",
+                            [("Close", None, "TButton")], kind="error")
+                return
         # The existing archives about to change, offered for a backup.
         changing = core.install_targets(M, client, server) if action == "install" \
-            else sorted(core.removal_plan(M, state, action == "leftovers"))
+            else sorted(set(core.removal_plan(M, state)) | set(core.install_targets(M, client, server))) \
+            if action == "update" else sorted(core.removal_plan(M, state, action == "leftovers"))
         archives = core.archives_to_back_up(changing)
         option = "Back up first the archive%s about to change: %s" % (
             "s" if len(archives) > 1 else "",
@@ -851,6 +877,23 @@ class InstallerWindow(object):
             answer = self.dialog("Install %s?" % M.title, text,
                                  [("Patch Wow.exe and install" if refusals else "Install", True,
                                    ACTIONS["install"][1]), cancel], option=option)
+        elif action == "update":
+            text = ("The installed version goes, as a removal takes it, except %s; then this package is installed."
+                    % update_kept(M, core.kept_text(M)))
+            if M.server_module:
+                text += "\n\nThe server must be rebuilt afterwards; on its next start, the core updater applies the " \
+                        "module's SQL again."
+            dropped = core.dropped_text(M)
+            if dropped:
+                text += ("\n\nThese tables are not kept, the module's manifest does not name them in "
+                         "kept_on_update: they are dropped and created again, and the data they hold is lost: %s."
+                         % dropped)
+            if refusals:
+                text += "\n\n%s." % core.refusal_text(client, refusals)
+            answer = self.dialog("Update %s?" % M.title, text,
+                                 [("Patch Wow.exe and update" if refusals else "Update", True,
+                                   ACTIONS["update"][1]), cancel], kind="warning" if dropped else "info",
+                                 focus=1 if dropped else 0, option=option)
         elif action == "remove":
             answer = self.dialog("Remove %s?" % M.title, "Everything that is left of it goes: %s.\n\nThis cannot "
                                  "be undone." % removal_parts(M, dbs),
@@ -867,12 +910,15 @@ class InstallerWindow(object):
 
         def job():
             # Read again: the state may have changed since the check.
-            fresh = core.survey(M, server, core.Client(client.folder) if client else None, dbs)
+            current = core.Client(client.folder) if client else None
+            fresh = core.survey(M, server, current, dbs)
             now = "remove" if fresh.strong() else "leftovers" if fresh.weak() else "install"
-            if now != action:
+            if now != ("remove" if action == "update" else action):
                 raise core.InstallerError("the state changed since the check: check again")
             core.refuse_while_running(server, client)
-            if action == "install":
+            if action == "update":
+                core.update_and_check(M, server, current, dbs, fresh, patch_exe=bool(refusals), backup=backup)
+            elif action == "install":
                 core.install_and_check(M, server, client, dbs, patch_exe=bool(refusals), backup=backup)
             else:
                 core.remove_and_check(M, server, client, dbs, fresh, leftovers=action == "leftovers",
@@ -881,14 +927,15 @@ class InstallerWindow(object):
 
         self.pending_action = action
         self.write_log("")
-        self.work({"install": "Installing...", "remove": "Removing...", "leftovers": "Removing leftovers..."}
+        self.work({"install": "Installing...", "update": "Updating...", "remove": "Removing...",
+                   "leftovers": "Removing leftovers..."}
                   [action], job, self.acted)
 
     def acted(self, result):
         M, server, action = result
         self.pending_action = None
-        if action == "install":
-            title, text = "Installation complete", ""
+        if action in ("install", "update"):
+            title, text = "Update complete" if action == "update" else "Installation complete", ""
             if M.server_module:
                 text = "\n".join(core.build_steps(server))
                 if core.has_sql(M):
