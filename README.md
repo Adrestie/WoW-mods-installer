@@ -42,7 +42,7 @@ right-click menu; Ctrl+C on a dialog copies its whole message.
   by running the program again.
 - **Any trace of the module, and Update chosen**: it UPDATES it to the package
   given. It removes the installed version as above, but keeps the players'
-  data (the tables the manifest names in `kept_on_update`), the module's
+  data (the tables and rows the manifest marks `kept_on_update`), the module's
   `.conf` (the new one takes over its settings) and `Wow.exe` as it is; then
   it installs. The server is rebuilt afterwards, and on its next start the
   core updater applies the module's SQL again. An update that stopped midway

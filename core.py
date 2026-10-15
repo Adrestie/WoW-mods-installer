@@ -1388,8 +1388,8 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True, update=F
     leftovers of the module, so DBC rows with its identifiers go too (never a
     game file); backup: copy the game archives about to change first; update:
     the removal that comes before installing the new version (update), which
-    keeps the players' data (kept_on_update tables, and the `before` statements
-    are not run), Wow.exe as it is and the shared components."""
+    keeps the players' data (kept_on_update tables and rows, and the `before`
+    statements are not run), Wow.exe as it is and the shared components."""
     heading("Removal of the installed version" if update else "Removal")
     by_archive = removal_plan(M, state, leftovers)
     if backup:
@@ -1413,8 +1413,9 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True, update=F
         for (table, column), sql in [] if update else desc.get("before", []):
             if table.lower() in existing and db.has_column(table, column):
                 script.append(sql)
+        kept_rows = desc.get("rows_kept_on_update", []) if update else []
         for t, condition in desc.get("rows", []):
-            if t.lower() in existing:
+            if t.lower() in existing and (t, condition) not in kept_rows:
                 script.append("DELETE FROM `%s` WHERE %s" % (t, condition))
         for t in desc.get("tables", []):
             if t.lower() in existing and t.lower() not in kept:
@@ -1971,9 +1972,11 @@ def is_settings_file(M, server, path):
 
 
 def kept_text(M):
-    """The tables an update keeps, in words ("" when the manifest keeps none)."""
-    return ", ".join("%s (database %s)" % (t, key) for key, d in sorted(M.databases.items())
-                     for t in d.get("kept_on_update", []))
+    """The tables and rows an update keeps, in words ("" when the manifest keeps none)."""
+    return ", ".join(["%s (database %s)" % (t, key) for key, d in sorted(M.databases.items())
+                      for t in d.get("kept_on_update", [])] +
+                     ["the module's rows of %s (database %s)" % (t, key) for key, d in sorted(M.databases.items())
+                      for t, _ in d.get("rows_kept_on_update", [])])
 
 
 def dropped_text(M):
@@ -1983,16 +1986,20 @@ def dropped_text(M):
 
 
 def without_kept(M, server, state):
-    """The State without what an update keeps (the module's .conf, the kept_on_update tables): what is
-    left of the installed version once its removal for an update is done."""
+    """The State without what an update keeps (the module's .conf, the kept_on_update tables and rows):
+    what is left of the installed version once its removal for an update is done."""
     s = copy.copy(state)
     s.confs = [p for p in state.confs if not is_settings_file(M, server, p)]
-    s.db_strong = {}
-    for key, traces in state.db_strong.items():
-        kept = {"table %s" % t for t in M.databases.get(key, {}).get("kept_on_update", [])}
-        rest = [(t, n) for t, n in traces if t not in kept]
-        if rest:
-            s.db_strong[key] = rest
+    for attribute in ("db_strong", "db_weak"):
+        traces_by_db = {}
+        for key, traces in getattr(state, attribute).items():
+            desc = M.databases.get(key, {})
+            kept = {"table %s" % t for t in desc.get("kept_on_update", [])} | \
+                {"rows of %s" % t for t, _ in desc.get("rows_kept_on_update", [])}
+            rest = [(t, n) for t, n in traces if t not in kept]
+            if rest:
+                traces_by_db[key] = rest
+        setattr(s, attribute, traces_by_db)
     return s
 
 
@@ -2024,7 +2031,7 @@ def update_and_check(M, server, client, dbs, state, patch_exe=False, backup=True
     kept = kept_text(M)
     say("  players' data kept: %s" % (kept or "none, the module declares no table to keep"))
     if dropped_text(M):
-        say("  tables dropped and created again, their rows lost: %s" % dropped_text(M))
+        say("  tables dropped, filled again from the module's SQL (rows added by hand lost): %s" % dropped_text(M))
     if M.conf:
         say("  the settings of %s kept" % M.conf["file"])
     if backup:
@@ -2109,7 +2116,7 @@ def run_console(M, args, settings):
         kept = kept_text(M)
         say("  --update replaces it with this package; players' data kept: %s" % (kept or "none declared"))
         if dropped_text(M):
-            say("  an update drops these tables, their rows lost: %s" % dropped_text(M))
+            say("  an update drops these tables, filled again from the module's SQL: %s" % dropped_text(M))
     if args.status:
         return 0
     refuse_while_running(server, client)

@@ -265,7 +265,7 @@ the worldserver folder, to remove the server DBC rows and database rows.
 | Key | Content |
 |---|---|
 | `tables` | tables that belong to the module: dropped on removal |
-| `rows` | rows of shared tables: deleted on removal (`DELETE FROM <table> WHERE <where>`) |
+| `rows` | rows of shared tables: deleted on removal (`DELETE FROM <table> WHERE <where>`); `"kept_on_update": true` keeps them on an update (spells players learned, their action bars, spawns placed by hand) |
 | `before` | statements run before the deletions, each only if the column `if_column` exists; e.g. giving back points before the table that counts them is dropped |
 | `kept_on_update` | tables of `tables` that an update keeps: the players' data |
 
@@ -287,9 +287,10 @@ An update replaces an installed module with the package: it removes the
 installed version as a removal does, then installs. It keeps the players'
 data and the server's settings:
 
-* the tables of `kept_on_update` stay, and the `before` statements are not
-  run (what they take back stays with the players); every other table is
-  dropped and every `rows` row deleted, as on removal;
+* the tables of `kept_on_update` stay, and so do the `rows` marked
+  `"kept_on_update": true`; the `before` statements are not run (what they
+  take back stays with the players); every other table is dropped and every
+  other `rows` row deleted, as on removal;
 * the module's `.conf` stays; the new one takes each of its settings the new
   template still has, and drops the others;
 * `Wow.exe` stays as it is, and so do the shared components (the install

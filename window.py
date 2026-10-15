@@ -885,9 +885,9 @@ class InstallerWindow(object):
                         "module's SQL again."
             dropped = core.dropped_text(M)
             if dropped:
-                text += ("\n\nThese tables are not kept, the module's manifest does not name them in "
-                         "kept_on_update: they are dropped and created again, and the data they hold is lost: %s."
-                         % dropped)
+                text += ("\n\nThese tables are not kept (not in the manifest's kept_on_update): they are dropped, "
+                         "then filled again from the module's SQL on the next start; rows added to them by hand are "
+                         "lost: %s." % dropped)
             if refusals:
                 text += "\n\n%s." % core.refusal_text(client, refusals)
             answer = self.dialog("Update %s?" % M.title, text,

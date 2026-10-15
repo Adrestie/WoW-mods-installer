@@ -287,7 +287,8 @@ def _databases(root, M, entry):
         if key not in ("world", "characters"):
             _error("database", 'database %r: "world" or "characters"' % key)
         where = "database.%s" % key
-        d = {"tables": list(desc.get("tables", [])), "rows": [], "before": [], "kept_on_update": []}
+        d = {"tables": list(desc.get("tables", [])), "rows": [], "before": [], "kept_on_update": [],
+             "rows_kept_on_update": []}
         kept = desc.get("kept_on_update", [])
         if not isinstance(kept, list) or any(not isinstance(t, str) for t in kept):
             _error(where, '"kept_on_update": a list of table names')
@@ -300,6 +301,10 @@ def _databases(root, M, entry):
             if not isinstance(r, dict) or "table" not in r or "where" not in r:
                 _error(where, 'rows[%d]: { "table": ..., "where": ... }' % k)
             d["rows"].append((r["table"], _substitute(r["where"], M, root, where)))
+            if not isinstance(r.get("kept_on_update", False), bool):
+                _error(where, 'rows[%d]: "kept_on_update" is true or false' % k)
+            if r.get("kept_on_update"):
+                d["rows_kept_on_update"].append(d["rows"][-1])
         for k, b in enumerate(desc.get("before", [])):
             if not isinstance(b, dict) or "sql" not in b:
                 _error(where, 'before[%d]: { "if_column": "table.column", "sql": ... }' % k)
