@@ -19,8 +19,8 @@ shown. The AzerothCore sources and
 says whether the path given is the expected one. It remembers them in
 `%APPDATA%\WoW-mods\installer-settings.json`. **Check** reads the server, the
 game archives and the database, then shows the module's state and the traces
-found, and the one button that fits: **Install**, **Remove** or **Remove
-leftovers**, each confirmed before anything is written. What the installer
+found, and the buttons that fit: **Install**, **Update** and **Remove**, or
+**Remove leftovers**, each confirmed before anything is written. What the installer
 does goes to the log at the bottom of the window. Every text of the window can
 be copied: selected with the mouse or Ctrl+A, then Ctrl+C, or from its
 right-click menu; Ctrl+C on a dialog copies its whole message.
@@ -40,6 +40,13 @@ right-click menu; Ctrl+C on a dialog copies its whole message.
   is, database included (read and cleaned through `mysql.exe`, with the
   credentials of `worldserver.conf`). An uninstall started by hand is finished
   by running the program again.
+- **Any trace of the module, and Update chosen**: it UPDATES it to the package
+  given. It removes the installed version as above, but keeps the players'
+  data (the tables and rows the manifest marks `kept_on_update`), the module's
+  `.conf` (the new one takes over its settings) and `Wow.exe` as it is; then
+  it installs. The server is rebuilt afterwards, and on its next start the
+  core updater applies the module's SQL again. An update that stopped midway
+  is finished by running it again.
 - **Only items that carry the module's identifiers without proof that they
   belong to it** (a DBC row with the same identifier and other content, a game
   file shipped in another version by another archive, database rows without
@@ -97,6 +104,7 @@ unexpected error).
 | `--mysql FILE` | path of `mysql.exe` |
 | `--status` | show the current state, change nothing |
 | `--yes` | install or remove without window |
+| `--update` | with `--yes`: a module present is updated to this package, players' data kept, instead of removed |
 | `--leftovers` | with `--yes`: the conflicting items are leftovers of the module, remove them |
 | `--patch-wow-exe` | with `--yes`: patch `Wow.exe` when it would refuse the module's interface files |
 | `--no-backup` | with `--yes`: do not copy the game archives about to change |

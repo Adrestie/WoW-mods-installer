@@ -19,7 +19,9 @@ Any trace: it removes everything that is left, wherever it is (sources,
 configuration, Lua scripts anywhere in the scripts folder, server DBC rows,
 DBC rows and files of every game archive, database data read and deleted
 through the mysql client). An uninstall started by hand is therefore
-finished by running the program again.
+finished by running the program again. Or, when asked, it updates: the same
+removal, minus the players' data (kept_on_update tables) and the module's
+.conf, then the install of the package.
 
 Items that carry the module's identifiers with nothing proving they are its
 own (a DBC row with the same identifier and other content, a game file
@@ -1379,13 +1381,16 @@ def removal_plan(M, state, leftovers=False):
     return plan
 
 
-def remove(M, server, client, dbs, state, leftovers=False, backup=True):
+def remove(M, server, client, dbs, state, leftovers=False, backup=True, update=False):
     """Removes everything that is the module's.
 
     state: the survey; leftovers: the user said the conflicting items are
     leftovers of the module, so DBC rows with its identifiers go too (never a
-    game file); backup: copy the game archives about to change first."""
-    heading("Removal")
+    game file); backup: copy the game archives about to change first; update:
+    the removal that comes before installing the new version (update), which
+    keeps the players' data (kept_on_update tables and rows, and the `before`
+    statements are not run), Wow.exe as it is and the shared components."""
+    heading("Removal of the installed version" if update else "Removal")
     by_archive = removal_plan(M, state, leftovers)
     if backup:
         # What is written back: the DBC files that lose rows, at most their present size.
@@ -1402,15 +1407,18 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True):
             continue
         db = dbs[key]
         existing = db.existing_tables(list(desc.get("tables", [])) + [t for t, _ in desc.get("rows", [])])
+        kept = {t.lower() for t in desc.get("kept_on_update", [])} if update else set()
         script = []
-        for (table, column), sql in desc.get("before", []):
+        # what is taken back before the tables go (talent points...) stays with the players on an update
+        for (table, column), sql in [] if update else desc.get("before", []):
             if table.lower() in existing and db.has_column(table, column):
                 script.append(sql)
+        kept_rows = desc.get("rows_kept_on_update", []) if update else []
         for t, condition in desc.get("rows", []):
-            if t.lower() in existing:
+            if t.lower() in existing and (t, condition) not in kept_rows:
                 script.append("DELETE FROM `%s` WHERE %s" % (t, condition))
         for t in desc.get("tables", []):
-            if t.lower() in existing:
+            if t.lower() in existing and t.lower() not in kept:
                 script.append("DROP TABLE IF EXISTS `%s`" % t)
         if script:
             db.run(";\n".join(script) + ";\n")
@@ -1458,16 +1466,17 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True):
                 client.forget(path)
                 os.remove(path)
                 say("  %s held nothing but unchanged copies: archive deleted" % path)
-    if client is not None:
+    if client is not None and not update:
         restore_wow_exe(M, client)
 
-    # Server files.
+    # Server files; an update keeps the .conf, whose settings the new version takes over.
     for d in state.sources:
         remove_tree(d)
         say("  deleted: %s" % d)
-    for p in state.confs + state.lua + state.backups:
+    confs = [p for p in state.confs if not (update and is_settings_file(M, server, p))]
+    for p in confs + state.lua + state.backups:
         os.remove(p)
-    for p in state.confs + state.backups + (state.lua if len(state.lua) <= 5 else []):
+    for p in confs + state.backups + (state.lua if len(state.lua) <= 5 else []):
         say("  deleted: %s" % p)
     if len(state.lua) > 5:
         say("  deleted: %d Lua script(s) of the module" % len(state.lua))
@@ -1489,8 +1498,9 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True):
                 remove_tree(d)
                 say("  deleted: %s" % d)
 
-    # Shared components go with the last module that uses them (never on a removal of leftovers).
-    if not leftovers:
+    # Shared components go with the last module that uses them (never on a removal of leftovers, nor
+    # on an update, whose install keeps the newer copy).
+    if not leftovers and not update:
         for c in M.shared:
             remove_shared(c, server, dbs)
 
@@ -1551,21 +1561,32 @@ def remove_shared(component, server, dbs):
 
 # ------------------------------------------------------------------ installation
 
-def configured_conf(M):
-    """The .conf text: the template with the manifest's values."""
+def configured_conf(M, previous=None):
+    """The .conf text: the template with the manifest's values; previous: {setting: value} of the .conf
+    an update replaces, whose settings still in the template keep their value."""
     with open(os.path.join(M.root, M.conf["template"]), encoding="utf-8") as f:
         text = f.read()
     for key, value in M.conf["values"].items():
         text, n = re.subn(r"(?m)^(%s\s*=\s*).*$" % re.escape(key), lambda m: m.group(1) + value, text)
         if not n:
             raise InstallerError("%s: setting %s missing from the template" % (M.conf["template"], key))
+    for key, value in (previous or {}).items():
+        # quoted in the template, quoted again (read_conf took the quotes away)
+        text = re.sub(r"(?m)^(%s\s*=\s*)(.*?)\s*$" % re.escape(key),
+                      lambda m: m.group(1) + ('"%s"' % value if m.group(2).startswith('"') else value), text)
     return text
 
 
-def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
+def previous_conf(M, server):
+    """{setting: value} of the module's .conf on the server, {} without one."""
+    p = os.path.join(server.module_confs, M.conf["file"]) if M.conf and server is not None else None
+    return read_conf(p) if p and os.path.isfile(p) else {}
+
+
+def install(M, server, client, dbs, patch_exe=False, backup=True, started=None, conf=None):
     """patch_exe: Wow.exe may be patched to accept the module's interface files; backup: copy the
     existing game archives about to change first; started: a dict, given "changed" before the
-    first change to the game or the server."""
+    first change to the game or the server; conf: the settings of the .conf an update replaced."""
     started = {} if started is None else started
     heading("Installation")
     installed = installed_dbc(M, server)
@@ -1682,8 +1703,12 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None):
         shutil.copyfile(os.path.join(M.root, M.conf["template"]),
                         os.path.join(server.module_confs, M.conf["file"] + ".dist"))
         with open(os.path.join(server.module_confs, M.conf["file"]), "w", encoding="utf-8", newline="") as f:
-            f.write(configured_conf(M))
-        say("  written: %s (and .dist)" % os.path.join(server.module_confs, M.conf["file"]))
+            f.write(configured_conf(M, conf))
+        say("  written: %s (and .dist)%s" % (os.path.join(server.module_confs, M.conf["file"]),
+                                             ", the previous settings kept" if conf else ""))
+        dropped = sorted(k for k in conf or {} if not re.search(r"(?m)^%s\s*=" % re.escape(k), configured_conf(M)))
+        if dropped:
+            say("  settings this version no longer has, dropped: %s" % ", ".join(dropped))
 
     # 5. Addons, copied as they are into Interface\AddOns.
     for name, source in sorted(M.addons.items()):
@@ -1895,14 +1920,19 @@ def refuse_while_running(server, client):
                              % ", ".join(p for n, p in game))
 
 
-def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
-    """Installs, then reads everything back from disk; says what is left to do."""
+def install_and_check(M, server, client, dbs, patch_exe=False, backup=True, update=False, conf=None):
+    """Installs, then reads everything back from disk; says what is left to do. update: the install
+    that follows the removal of the installed version (update), conf: the settings of its .conf."""
     started = {}
     try:
-        install(M, server, client, dbs, patch_exe, backup, started)
+        install(M, server, client, dbs, patch_exe, backup, started, conf)
     except Exception:
         say()
-        if started:
+        if update:
+            say("The update stopped after the installed version was removed; the players' data is kept.")
+            say("Run the installer again and choose Update: it removes what was put in place and installs")
+            say("this version.")
+        elif started:
             say("The installation stopped midway. Run the installer again: it removes what was put")
             say("in place; run it once more to install.")
         else:
@@ -1914,7 +1944,10 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
         raise InstallerError("after installation, missing: %s" % "; ".join(missing))
     say("  everything in place, read back from disk")
     say()
-    say("Installation complete.")
+    say("Update complete." if update else "Installation complete.")
+    kept = kept_text(M)
+    if update and kept:
+        say("Players' data kept: %s." % kept)
     if not M.server_module:
         if has_server_part(M) and server is None:
             say("Without a worldserver folder, only the game part is in place: the DBC rows and database")
@@ -1930,6 +1963,95 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True):
     else:
         say("The installer applied the module's SQL itself: the core updater is off")
         say("(Updates.EnableDatabases in worldserver.conf).")
+
+
+def is_settings_file(M, server, path):
+    """True for the module's .conf (not its .dist): the settings an update keeps."""
+    return bool(M.conf) and os.path.normcase(path) == os.path.normcase(os.path.join(server.module_confs,
+                                                                                     M.conf["file"]))
+
+
+def kept_text(M):
+    """The tables and rows an update keeps, in words ("" when the manifest keeps none)."""
+    return ", ".join(["%s (database %s)" % (t, key) for key, d in sorted(M.databases.items())
+                      for t in d.get("kept_on_update", [])] +
+                     ["the module's rows of %s (database %s)" % (t, key) for key, d in sorted(M.databases.items())
+                      for t, _ in d.get("rows_kept_on_update", [])])
+
+
+def dropped_text(M):
+    """The module's tables an update drops (not in kept_on_update), in words ("" when it keeps them all)."""
+    return ", ".join("%s (database %s)" % (t, key) for key, d in sorted(M.databases.items())
+                     for t in d.get("tables", []) if t not in d.get("kept_on_update", []))
+
+
+def without_kept(M, server, state):
+    """The State without what an update keeps (the module's .conf, the kept_on_update tables and rows):
+    what is left of the installed version once its removal for an update is done."""
+    s = copy.copy(state)
+    s.confs = [p for p in state.confs if not is_settings_file(M, server, p)]
+    for attribute in ("db_strong", "db_weak"):
+        traces_by_db = {}
+        for key, traces in getattr(state, attribute).items():
+            desc = M.databases.get(key, {})
+            kept = {"table %s" % t for t in desc.get("kept_on_update", [])} | \
+                {"rows of %s" % t for t, _ in desc.get("rows_kept_on_update", [])}
+            rest = [(t, n) for t, n in traces if t not in kept]
+            if rest:
+                traces_by_db[key] = rest
+        setattr(s, attribute, traces_by_db)
+    return s
+
+
+def update_refusal(M, client, state, patch_exe):
+    """Why an update cannot start (None: it can), checked before anything is written: items that are not
+    the module's would stop the new version's install, or Wow.exe would refuse its files."""
+    if state.server_conflicts or state.client_conflicts or state.file_conflicts:
+        return ("items that carry the module's identifiers without being its own (listed as conflicts) would stop "
+                "the new version's install: no update while they are there")
+    refusals = wow_exe_refusals(M, client) if client is not None else []
+    if any(s != "original" for _, s in refusals):
+        return refusal_text(client, refusals)
+    if refusals and not patch_exe:
+        return refusal_text(client, refusals) + ": allow it (--patch-wow-exe in the console)"
+    return None
+
+
+def update_and_check(M, server, client, dbs, state, patch_exe=False, backup=True):
+    """Replaces the installed version, in whole or in part, with this package: removes it as a removal
+    does, except the players' data (the kept_on_update tables, the `before` statements not run), then
+    installs. The core updater applies the new version's SQL on the next start: the SQL of a module that
+    keeps tables must run again on them without harm. state: the survey."""
+    why = update_refusal(M, client, state, patch_exe)
+    if why:
+        raise InstallerError(why)
+    # Checked before the first write too: room in the archives, DBC files read in the right order.
+    targets = install_targets(M, client, server)
+    heading("Update")
+    kept = kept_text(M)
+    say("  players' data kept: %s" % (kept or "none, the module declares no table to keep"))
+    if dropped_text(M):
+        say("  tables dropped, filled again from the module's SQL (rows added by hand lost): %s" % dropped_text(M))
+    if M.conf:
+        say("  the settings of %s kept" % M.conf["file"])
+    if backup:
+        plan = removal_plan(M, state)
+        written = sum(os.path.getsize(p) for p in M.game_files.values())
+        for path, (rows, _) in plan.items():
+            a = client.open(path)
+            written += sum(a.size("DBFilesClient\\" + f) for f in rows if a.contains("DBFilesClient\\" + f))
+        back_up_archives(sorted(set(plan) | set(targets)), written)
+    conf = previous_conf(M, server)
+    remove(M, server, client, dbs, state, backup=False, update=True)
+    client = Client(client.folder) if client else None
+    left = without_kept(M, server, survey(M, server, client, dbs))
+    if left.strong() or left.weak():
+        heading("Left after the removal")
+        print_state(left)
+        print_conflicts(left)
+        raise InstallerError("the installed version is not completely removed (above): the new one was not installed. "
+                             "Run the installer again and choose Update")
+    install_and_check(M, server, client, dbs, patch_exe=patch_exe, backup=False, update=True, conf=conf)
 
 
 def remove_and_check(M, server, client, dbs, state, leftovers=False, backup=True):
@@ -1990,6 +2112,11 @@ def run_console(M, args, settings):
         refusals = wow_exe_refusals(M, client)
         if refusals:
             say("  Wow.exe: %s" % refusal_text(client, refusals))
+    if state.strong():
+        kept = kept_text(M)
+        say("  --update replaces it with this package; players' data kept: %s" % (kept or "none declared"))
+        if dropped_text(M):
+            say("  an update drops these tables, filled again from the module's SQL: %s" % dropped_text(M))
     if args.status:
         return 0
     refuse_while_running(server, client)
@@ -2005,6 +2132,10 @@ def run_console(M, args, settings):
         if state.has_conflicts():
             print_conflicts(state)
         say()
+    if state.strong() and args.update:
+        say("The module is present, in whole or in part: this run UPDATES it to this package, players' data kept.")
+        update_and_check(M, server, client, dbs, state, patch_exe=args.patch_wow_exe, backup=backup)
+        return 0
     if state.strong():
         say("The module is present, in whole or in part: this run REMOVES everything that is left of it.")
         remove_and_check(M, server, client, dbs, state, backup=backup)
@@ -2114,6 +2245,9 @@ def main(load_manifest):
     p.add_argument("--status", action="store_true", help="show the current state, change nothing")
     p.add_argument("--yes", action="store_true", help="install or remove without window "
                                                       "(paths from the options or remembered)")
+    p.add_argument("--update", action="store_true",
+                   help="with --yes: the module is present, replace it with this package and keep the players' "
+                        "data (the tables its manifest keeps); without it, a present module is removed")
     p.add_argument("--leftovers", action="store_true",
                    help="with --yes: the conflicting items are leftovers of the module, remove them")
     p.add_argument("--patch-wow-exe", action="store_true",
