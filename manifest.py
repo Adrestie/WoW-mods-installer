@@ -202,6 +202,33 @@ def _addons(root, entry):
     return addons
 
 
+SERVER_DATA_FOLDERS = ("maps", "vmaps", "mmaps")
+
+
+def _server_data(root, entry):
+    """{path under the worldserver's Data folder, with /: package file}: package folders whose tree
+    is the Data folder's (data/server/vmaps/449.vmtree is Data/vmaps/449.vmtree), maps, vmaps and
+    mmaps only (the DBC files go through `dbc`)."""
+    files = {}
+    if not entry:
+        return files
+    for source in entry.get("sources", []):
+        base = os.path.join(root, source)
+        if not os.path.isdir(base):
+            _error("server_data", "folder missing from the package: %s" % source)
+        for d, _, names in os.walk(base):
+            for n in names:
+                path = os.path.join(d, n)
+                rel = os.path.relpath(path, base).replace(os.sep, "/")
+                top = rel.split("/")[0].lower()
+                if "/" not in rel or top not in SERVER_DATA_FOLDERS:
+                    _error("server_data", "%s: only files of %s" % (rel, ", ".join(SERVER_DATA_FOLDERS)))
+                if rel.lower() in {k.lower() for k in files}:
+                    _error("server_data", "%s provided twice" % rel)
+                files[rel] = path
+    return files
+
+
 def _lua(root, entry, has_conf):
     """The module's Lua scripts: {"folder", "files": {path under the folder: package path},
     "config_path"}. `files` are copied flat into the folder, `sources` are package folders
@@ -335,7 +362,8 @@ def _fields(entry, M):
         else:
             _error("fields", '%s: "required", or {"optional": "why it is optional"}' % k)
     needs = {"game": bool(M.game_files or M.addons or any(d.client is not None for d in M.dbc)),
-             "worldserver": M.server_module or any(d.server is not None for d in M.dbc) or bool(M.databases),
+             "worldserver": M.server_module or any(d.server is not None for d in M.dbc) or bool(M.databases) or
+                            bool(M.server_data),
              "sources": M.server_module,
              # the databases: rows to look for and delete, or SQL the installer may apply itself
              "mysql": bool(M.databases) or any(module_sql_files(M, k) for k in ("world", "characters"))}
@@ -424,6 +452,7 @@ def load(root):
     M.game_files, M.owned_folders = _game_files(M.root, m.get("game_files"))
     M.replaced = _replaced(M.game_files, m.get("game_files"))
     M.addons = _addons(M.root, m.get("addons"))
+    M.server_data = _server_data(M.root, m.get("server_data"))
     M.backups = list(m.get("backups", []))
     M.databases = _databases(M.root, M, m.get("database"))
     if not M.server_module:

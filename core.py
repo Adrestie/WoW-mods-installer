@@ -817,6 +817,7 @@ class State(object):
         self.files = []              # (archive, name): named by the receipt, or under an owned folder
         self.backups = []            # backups left by older tools
         self.addons = []             # the module's addon folders in Interface\AddOns
+        self.server_data = None      # (receipt path, receipt): the module's files in the Data folder
         self.db_strong = {}          # {database: [(text, count)]}: module tables, updater rows
         # weak items
         self.server_conflicts = []   # (path, file, ids with other content)
@@ -827,7 +828,7 @@ class State(object):
     def strong(self):
         return bool(self.sources or self.confs or self.lua or self.lua_dir or self.server_dbc or
                     self.receipts or self.client_dbc or self.files or self.backups or self.addons or
-                    self.db_strong)
+                    self.server_data or self.db_strong)
 
     def weak(self):
         return bool(self.server_conflicts or self.client_conflicts or self.file_conflicts or self.db_weak)
@@ -856,6 +857,10 @@ class State(object):
             out.append(("game files", "%s: %s" % (a, detail)))
         out += [("backup", s) for s in self.backups]
         out += [("addon", d) for d in self.addons]
+        if self.server_data:
+            path, receipt = self.server_data
+            out.append(("server data", "%s: %d file(s) in the Data folder, %d original(s) kept"
+                        % (path, len(receipt.get("files", [])), len(receipt.get("originals", [])))))
         for db, traces in sorted(self.db_strong.items()):
             out += [("database %s" % db, "%s: %s" % (t, n)) for t, n in traces]
         # the module is there: the database rows in its name go with it
@@ -1174,6 +1179,11 @@ def survey(M, server, client, dbs):
         survey_game(M, client, s, installed)
 
     s.backups = module_backups(M, server, client)
+    if server is not None:
+        p = server_data_receipt(M, server)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                s.server_data = (p, json.load(f))
     for key, db in dbs.items():
         strong, weak = survey_database(db, M.databases.get(key, {}))
         if strong:
@@ -1438,6 +1448,80 @@ def removal_plan(M, state, leftovers=False):
     return plan
 
 
+# ------------------------------------------------------------------ the worldserver's Data folder
+
+def server_data_folder(server):
+    """Where the installer keeps its records in the Data folder."""
+    return os.path.join(server.data, "wow-mods")
+
+
+def server_data_receipt(M, server):
+    """The record of what the module put in the Data folder: its files, and those it replaced."""
+    return os.path.join(server_data_folder(server), M.name + ".json")
+
+
+def server_data_originals(M, server):
+    """The files the module's replaced, kept to be put back on removal."""
+    return os.path.join(server_data_folder(server), M.name)
+
+
+def server_data_claimed(M, server):
+    """[(other module, file)]: the module's Data files another module's record already lists."""
+    mine = {rel.lower() for rel in M.server_data}
+    out = []
+    for p in sorted(glob.glob(os.path.join(server_data_folder(server), "*.json"))):
+        other = os.path.splitext(os.path.basename(p))[0]
+        if other.lower() == M.name.lower():
+            continue
+        with open(p, encoding="utf-8") as f:
+            files = json.load(f).get("files", [])
+        out += [(other, rel) for rel in files if rel.lower() in mine]
+    return out
+
+
+def install_server_data(M, server):
+    """Copies the module's Data files; a file already there is kept aside first (even identical: it
+    was there before the module, removal puts it back)."""
+    keep = server_data_originals(M, server)
+    originals = []
+    for rel, source in sorted(M.server_data.items()):
+        target = os.path.join(server.data, *rel.split("/"))
+        if os.path.isfile(target):
+            kept = os.path.join(keep, *rel.split("/"))
+            os.makedirs(os.path.dirname(kept), exist_ok=True)
+            shutil.copyfile(target, kept)
+            originals.append(rel)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(source, target)
+    os.makedirs(server_data_folder(server), exist_ok=True)
+    with open(server_data_receipt(M, server), "w", encoding="utf-8") as f:
+        json.dump({"files": sorted(M.server_data), "originals": originals}, f, indent=1)
+    say("  copied: %d file(s) into %s%s" % (len(M.server_data), server.data,
+                                             ", %d original(s) kept in %s" % (len(originals), keep)
+                                             if originals else ""))
+
+
+def remove_server_data(M, server, receipt):
+    """Takes the module's Data files away and puts back the ones they had replaced."""
+    keep = server_data_originals(M, server)
+    restored = deleted = 0
+    for rel in receipt.get("files", []):
+        target = os.path.join(server.data, *rel.split("/"))
+        kept = os.path.join(keep, *rel.split("/"))
+        if os.path.isfile(kept):
+            shutil.copyfile(kept, target)
+            restored += 1
+        elif os.path.isfile(target):
+            os.remove(target)
+            deleted += 1
+    if os.path.isdir(keep):
+        remove_tree(keep)
+    os.remove(server_data_receipt(M, server))
+    if os.path.isdir(server_data_folder(server)) and not os.listdir(server_data_folder(server)):
+        os.rmdir(server_data_folder(server))
+    say("  %s: %d file(s) deleted, %d original(s) put back" % (server.data, deleted, restored))
+
+
 def remove(M, server, client, dbs, state, leftovers=False, backup=True, update=False):
     """Removes everything that is the module's.
 
@@ -1540,6 +1624,8 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True, update=F
     for d in state.addons:
         remove_tree(d)
         say("  deleted: %s" % d)
+    if state.server_data:
+        remove_server_data(M, server, state.server_data[1])
     if M.lua:
         d = os.path.join(server.lua, M.lua["folder"])
         if os.path.isdir(d):
@@ -1653,6 +1739,11 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None, 
             raise InstallerError("%s not found (DataDir of worldserver.conf)" % os.path.join(server.dbc, d.file))
         if d.client is not None and client.winner("DBFilesClient\\" + d.file) is None:
             raise InstallerError("no game archive contains DBFilesClient\\%s" % d.file)
+    if M.server_data:
+        claimed = server_data_claimed(M, server)
+        if claimed:
+            raise InstallerError("%s already installed %s in the Data folder: remove it first"
+                                 % (claimed[0][0], claimed[0][1]))
     refusals = wow_exe_refusals(M, client)
     if any(state != "original" for _, state in refusals):
         raise InstallerError(refusal_text(client, refusals))
@@ -1767,7 +1858,11 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None, 
         if dropped:
             say("  settings this version no longer has, dropped: %s" % ", ".join(dropped))
 
-    # 5. Addons, copied as they are into Interface\AddOns.
+    # 5. Files of the worldserver's Data folder (maps, vmaps, mmaps); the ones they replace are kept.
+    if M.server_data:
+        install_server_data(M, server)
+
+    # 5b. Addons, copied as they are into Interface\AddOns.
     for name, source in sorted(M.addons.items()):
         destination = addon_folder(client, name)
         shutil.copytree(source, destination, ignore=lambda folder, names: [n for n in names if n in NEVER_COPIED])
@@ -1842,6 +1937,16 @@ def missing_after_install(M, server, client, dbs):
         d = os.path.join(server.modules, M.name)
         if not all(os.path.isfile(os.path.join(d, s)) for s in M.signature):
             missing.append("sources in %s" % d)
+    for rel, source in M.server_data.items():
+        q = os.path.join(server.data, *rel.split("/"))
+        if not os.path.isfile(q):
+            missing.append(q)
+            continue
+        with open(source, "rb") as a, open(q, "rb") as b:
+            if a.read() != b.read():
+                missing.append(q)
+    if M.server_data and not os.path.isfile(server_data_receipt(M, server)):
+        missing.append(server_data_receipt(M, server))
     for name, source in M.addons.items():
         target = addon_folder(client, name)
         for folder, _, files in os.walk(source):
