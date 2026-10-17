@@ -874,9 +874,13 @@ class InstallerWindow(object):
                 where, "\n\nThe server must be rebuilt afterwards." if M.server_module else "")
             if refusals:
                 text += "\n\n%s." % core.refusal_text(client, refusals)
+            missing = core.missing_dependencies_text(M, server)
+            if missing:
+                text += "\n\n%s." % missing
             answer = self.dialog("Install %s?" % M.title, text,
                                  [("Patch Wow.exe and install" if refusals else "Install", True,
-                                   ACTIONS["install"][1]), cancel], option=option)
+                                   ACTIONS["install"][1]), cancel], kind="warning" if missing else "info",
+                                 option=option)
         elif action == "update":
             text = ("The installed version goes, as a removal takes it, except %s; then this package is installed."
                     % update_kept(M, core.kept_text(M)))
@@ -890,13 +894,17 @@ class InstallerWindow(object):
                          "lost: %s." % dropped)
             if refusals:
                 text += "\n\n%s." % core.refusal_text(client, refusals)
+            missing = core.missing_dependencies_text(M, server)
+            if missing:
+                text += "\n\n%s." % missing
             answer = self.dialog("Update %s?" % M.title, text,
                                  [("Patch Wow.exe and update" if refusals else "Update", True,
                                    ACTIONS["update"][1]), cancel], kind="warning" if dropped else "info",
                                  focus=1 if dropped else 0, option=option)
         elif action == "remove":
+            dependents = core.dependent_modules_text(M, server)
             answer = self.dialog("Remove %s?" % M.title, "Everything that is left of it goes: %s.\n\nThis cannot "
-                                 "be undone." % removal_parts(M, dbs),
+                                 "be undone." % removal_parts(M, dbs) + ("\n\n%s." % dependents if dependents else ""),
                                  [("Remove", True, ACTIONS["remove"][1]), cancel], kind="warning", focus=1,
                                  option=option)
         else:

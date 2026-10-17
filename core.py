@@ -900,6 +900,63 @@ def module_source_dirs(M, server):
     return found
 
 
+def installed_modules(server):
+    """{module name: dependencies} of the modules in the server sources: each keeps its installer.json
+    there (a folder without one counts by its name, without dependencies)."""
+    found = {}
+    if server is None or not server.has_valid_sources():
+        return found
+    for n in sorted(os.listdir(server.modules)):
+        d = os.path.join(server.modules, n)
+        if not os.path.isdir(d):
+            continue
+        name, needs = n, []
+        try:
+            with open(os.path.join(d, MANIFEST_NAME), encoding="utf-8") as f:
+                m = json.load(f)
+            if isinstance(m, dict):
+                name = m.get("module") if isinstance(m.get("module"), str) else n
+                needs = [x for x in m.get("dependencies") or [] if isinstance(x, str)]
+        except (OSError, ValueError):
+            pass
+        found[name.lower()] = (name, needs)
+    return found
+
+
+def missing_dependencies(M, server):
+    """The modules M needs that the server's sources do not hold."""
+    if server is None or not server.has_valid_sources():
+        return []
+    installed = installed_modules(server)
+    return [d for d in M.dependencies if d.lower() not in installed]
+
+
+def dependent_modules(M, server):
+    """The other installed modules whose manifest lists M among their dependencies."""
+    return [name for key, (name, needs) in sorted(installed_modules(server).items())
+            if key != M.name.lower() and M.name.lower() in (x.lower() for x in needs)]
+
+
+def missing_dependencies_text(M, server):
+    """The warning of an install whose dependencies are missing ("" when none is)."""
+    missing = missing_dependencies(M, server)
+    if not missing:
+        return ""
+    return ("%s needs %s, not installed on this server: the installation goes on, but the module goes without "
+            "what %s brings until %s installed" % (M.title, ", ".join(missing), "they" if len(missing) > 1 else "it",
+                                                   "they are" if len(missing) > 1 else "it is"))
+
+
+def dependent_modules_text(M, server):
+    """The warning of a removal that other installed modules need ("" when none does)."""
+    dependents = dependent_modules(M, server)
+    if not dependents:
+        return ""
+    return ("%s need%s %s and stay%s installed: the removal goes on, they lose what it brings"
+            % (", ".join(dependents), "" if len(dependents) > 1 else "s", M.title,
+               "" if len(dependents) > 1 else "s"))
+
+
 def addon_folder(client, name):
     """Where the game reads the addon of this name."""
     return os.path.join(client.folder, "Interface", "AddOns", name)
@@ -1924,6 +1981,10 @@ def install_and_check(M, server, client, dbs, patch_exe=False, backup=True, upda
     """Installs, then reads everything back from disk; says what is left to do. update: the install
     that follows the removal of the installed version (update), conf: the settings of its .conf."""
     started = {}
+    warning = missing_dependencies_text(M, server)
+    if warning:
+        say()
+        say("WARNING: %s." % warning)
     try:
         install(M, server, client, dbs, patch_exe, backup, started, conf)
     except Exception:
@@ -2055,6 +2116,10 @@ def update_and_check(M, server, client, dbs, state, patch_exe=False, backup=True
 
 
 def remove_and_check(M, server, client, dbs, state, leftovers=False, backup=True):
+    warning = "" if leftovers else dependent_modules_text(M, server)
+    if warning:
+        say()
+        say("WARNING: %s." % warning)
     remove(M, server, client, dbs, state, leftovers, backup)
     check_removal(M, server, client, dbs)
 

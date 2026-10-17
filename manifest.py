@@ -368,6 +368,19 @@ def _optional_notes(entry, reasons):
     return [n.strip() for n in notes]
 
 
+def _dependencies(entry, M):
+    """The modules this one needs, each named as the `module` field of its own manifest. A missing one is
+    only a warning: the installation goes on."""
+    if entry is None:
+        return []
+    if not isinstance(entry, list) or not all(isinstance(d, str) and re.match(r"^[A-Za-z0-9_.-]+$", d)
+                                              for d in entry):
+        _error("dependencies", 'the modules it needs, as their manifests name them: ["dynamicloot"]')
+    if M.name in entry:
+        _error("dependencies", "a module does not depend on itself")
+    return list(dict.fromkeys(entry))
+
+
 def load(root):
     """The Module described by root/installer.json."""
     path = os.path.join(root, MANIFEST_NAME)
@@ -421,6 +434,7 @@ def load(root):
             if module_sql_files(M, key) and not M.databases.get(key, {}).get("rows"):
                 _error("database", "data/sql holds SQL for the %s database: declare in database.%s.rows "
                                    "the rows it adds, so that removal deletes them" % (key, key))
+    M.dependencies = _dependencies(m.get("dependencies"), M)
     M.shared = _shared(M.root, M, m.get("shared"))
     M.fields, M.reasons = _fields(m.get("fields"), M)
     M.optional_notes = _optional_notes(m.get("optional-notes"), M.reasons)

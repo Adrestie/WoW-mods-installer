@@ -28,6 +28,7 @@ Paths inside the package are relative to the module folder, with `/`.
 | `addons` | no | addon folders copied into the game's `Interface\AddOns`, see below |
 | `backups` | no | suffixes of backup files left by older tools (e.g. `".avant_item_upgrade"`), deleted on removal |
 | `database` | no | what the module leaves in the database, see below |
+| `dependencies` | no | the modules it needs, each named as the `module` field of its own manifest, see below |
 
 The SQL files are not declared: they are the `.sql` files under the folders
 of the module's `data/sql` whose name holds the database's name
@@ -223,6 +224,25 @@ at least one of the module's game files.
 Package folders copied as they are into `Interface\AddOns` of the game folder
 (`Interface\AddOns\ForeverUI`); each holds the `.toc` named after it. On
 removal the folder is deleted.
+
+### dependencies
+
+```json
+"dependencies": ["dynamicloot"]
+```
+
+The modules this one needs, each named as the `module` field of its own
+manifest. A dependency is never a reason to stop:
+
+* installing (or updating) a module whose dependency the server's sources do
+  not hold gives a warning, and the installation goes on; the module goes
+  without what the dependency brings until it is installed;
+* removing a module that installed modules list in their `dependencies` names
+  them in a warning, and the removal goes on; they lose what it brings.
+
+The installer finds the installed modules in the server's sources: each keeps
+its `installer.json` in its folder of `modules/` (a folder without one counts
+by its name).
 
 ### Package without server module
 
