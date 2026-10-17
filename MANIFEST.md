@@ -26,6 +26,7 @@ Paths inside the package are relative to the module folder, with `/`.
 | `dbc` | no | the module's DBC rows, see below |
 | `game_files` | no | files written into the game archives, see below |
 | `addons` | no | addon folders copied into the game's `Interface\AddOns`, see below |
+| `server_data` | no | files of the worldserver's `Data` folder (maps, vmaps, mmaps), see below |
 | `backups` | no | suffixes of backup files left by older tools (e.g. `".avant_item_upgrade"`), deleted on removal |
 | `database` | no | what the module leaves in the database, see below |
 | `dependencies` | no | the modules it needs, each named as the `module` field of its own manifest, see below |
@@ -74,7 +75,7 @@ Each field must match the rest of the manifest, or the manifest is refused:
 | Field | Declared exactly when | Optional |
 |---|---|---|
 | `game` | the module has `game_files`, `addons` or client DBC rows | never |
-| `worldserver` | a server module, server DBC rows, or `database` | for a package without server module: left empty, the server part is left out (see below) |
+| `worldserver` | a server module, server DBC rows, `database` or `server_data` | for a package without server module: left empty, the server part is left out (see below) |
 | `sources` | a server module | never |
 | `mysql` | SQL in `data/sql`, or `database` | exactly when `worldserver` is |
 
@@ -224,6 +225,26 @@ at least one of the module's game files.
 Package folders copied as they are into `Interface\AddOns` of the game folder
 (`Interface\AddOns\ForeverUI`); each holds the `.toc` named after it. On
 removal the folder is deleted.
+
+### server_data
+
+```json
+"server_data": {
+  "sources": ["data/server"]
+}
+```
+
+`sources`: package folders whose tree is the worldserver's `Data` folder (the
+`DataDir` of worldserver.conf): `data/server/vmaps/449.vmtree` is
+`Data\vmaps\449.vmtree`. Only files of `maps`, `vmaps` and `mmaps`: a module
+that rebuilds a map (a WMO of its own, say) brings the collision and
+navigation the server makes from it.
+
+A file already there with other content is kept first, in
+`Data\wow-mods\<module>\`, and the record `Data\wow-mods\<module>.json` lists
+the module's files and the ones it kept. On removal the module's files go
+and the kept ones are put back. Two modules cannot install the same file:
+the second is refused until the first is removed.
 
 ### dependencies
 
