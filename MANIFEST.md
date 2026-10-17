@@ -240,7 +240,7 @@ removal the folder is deleted.
 that rebuilds a map (a WMO of its own, say) brings the collision and
 navigation the server makes from it.
 
-A file already there with other content is kept first, in
+A file already there (even identical) is kept first, in
 `Data\wow-mods\<module>\`, and the record `Data\wow-mods\<module>.json` lists
 the module's files and the ones it kept. On removal the module's files go
 and the kept ones are put back. Two modules cannot install the same file:

@@ -1480,19 +1480,17 @@ def server_data_claimed(M, server):
 
 
 def install_server_data(M, server):
-    """Copies the module's Data files; a different file already there is kept aside first."""
+    """Copies the module's Data files; a file already there is kept aside first (even identical: it
+    was there before the module, removal puts it back)."""
     keep = server_data_originals(M, server)
     originals = []
     for rel, source in sorted(M.server_data.items()):
         target = os.path.join(server.data, *rel.split("/"))
         if os.path.isfile(target):
-            with open(source, "rb") as a, open(target, "rb") as b:
-                same = a.read() == b.read()
-            if not same:
-                kept = os.path.join(keep, *rel.split("/"))
-                os.makedirs(os.path.dirname(kept), exist_ok=True)
-                shutil.copyfile(target, kept)
-                originals.append(rel)
+            kept = os.path.join(keep, *rel.split("/"))
+            os.makedirs(os.path.dirname(kept), exist_ok=True)
+            shutil.copyfile(target, kept)
+            originals.append(rel)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         shutil.copyfile(source, target)
     os.makedirs(server_data_folder(server), exist_ok=True)
