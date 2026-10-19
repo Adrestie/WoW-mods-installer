@@ -142,41 +142,6 @@ It also runs without being compiled: `python installer\installer.py [module]`
 (`python -m pip install pyinstaller`). A change to a module's manifest needs
 no rebuild: the manifest is read at run time.
 
-## The loot editor
-
-`loot-editor.exe` writes the loot lines of a mod that drops its items through
-[DynamicLoot](https://github.com/Adrestie/WoW-mods-dynamicloot): the
-`<Mod>.Loot.*` settings of its `.conf`, without typing them.
-
-* Give it the game folder (the icons come from its archives) and the
-  worldserver folder (its `worldserver.conf` gives the world database; the
-  families are read from the DynamicLoot installed in the server's sources),
-  then **Connect**.
-* Search items by name, by entry, or by range (`87001-87372`); the results
-  show with their icons, framed in their quality's colour.
-* Drag an item onto a family: a new draw (a die). Onto an existing die: a
-  fallback, tried after the others. Click an item placed in a family to set
-  its chance and quantity, move it in its die or delete it; drag it to another
-  family to move it (Ctrl: copy), or back onto the search to remove it.
-* **New list** makes a list (`items[0]`, renamed at will); drop items into it,
-  or **Add all to the list** for a whole search. A list is dragged into the
-  families like an item, and drawn without weights.
-* Drop items on **NoPity** to keep the bad luck protection off them; set the
-  mod's prefix and its rate at the top.
-* **Import a .conf** reads the `<Mod>.Loot.*` lines of a mod already written,
-  to change them. **Generate** checks everything as DynamicLoot would, copies
-  the lines to the clipboard, and shows them: paste them into the mod's
-  `.conf` (configs\modules), then restart the worldserver.
-
-The window speaks French when the game runs in French (`SET locale` of
-`WTF\Config.wtf`), English otherwise; the language can be changed at the top
-right. It only reads: the database, the game and the server's files are never
-written.
-
-`build_editor.cmd` builds it with PyInstaller and Pillow
-(`python -m pip install pyinstaller pillow`). Without compiling:
-`python installer\loot_editor.py`.
-
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
