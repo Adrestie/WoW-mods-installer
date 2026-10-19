@@ -268,11 +268,6 @@ class InstallerWindow(object):
         bar.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self.check_button = ttk.Button(bar, text="Check", style="Accent.TButton", command=self.check)
         self.check_button.pack(side="right")
-        # active once the game folder holds a custom patch archive the game loads (refresh_compact)
-        self.compactable = []
-        self.compact_lookup = None
-        self.compact_button = ttk.Button(bar, text="Compact...", command=self.compact)
-        self.compact_button.pack(side="right", padx=(0, 8))
         self.places = ReadOnlyText(bar, BG, foreground=MUTED)
         self.places.pack(side="left", fill="x", expand=True, padx=(0, 12))
         self.copyable_text(self.places)
@@ -284,6 +279,12 @@ class InstallerWindow(object):
         self.progress.pack(side="left")
         self.progress_text = ttk.Label(status, text="", style="Hint.TLabel")
         self.progress_text.pack(side="left", padx=10)
+        # bottom right; active once the game folder holds a custom patch archive the game loads
+        # (refresh_compact), whatever the module and the worldserver field
+        self.compactable = []
+        self.compact_lookup = None
+        self.compact_button = ttk.Button(status, text="Compact...", command=self.compact)
+        self.compact_button.pack(side="right")
 
         # State, then log, in two panes the user can resize.
         panes = ttk.PanedWindow(outer, orient="vertical")
@@ -1005,7 +1006,7 @@ class InstallerWindow(object):
         those chosen."""
         if self.working or not self.compactable:
             return
-        folder, server = self.values()["client"], self.values()["server"]
+        folder = self.values()["client"]
 
         def survey():
             client = core.Client(folder)
@@ -1026,7 +1027,7 @@ class InstallerWindow(object):
 
             def job():
                 current = core.Client(client.folder)
-                core.refuse_compaction_while_running(current, server)
+                core.refuse_while_running(None, current)
                 return core.compact(current, paths, backup=backup)
 
             self.pending_action = "compact"
@@ -1038,9 +1039,9 @@ class InstallerWindow(object):
         self.work("Reading the archives...", survey, chosen)
 
     def compact_dialog(self, client, entries):
-        """The archives to compact, ticked by the user: one box per custom patch archive the game loads,
-        with its size and what compacting it frees, those of patch Z ticked at first; below, what the
-        archives ticked need. Returns ([paths], backup) or None."""
+        """The archives to compact, chosen by the user in a list of the custom patch archives the game loads
+        (10 rows shown), each with its size and what compacting it frees, those of patch Z selected at first;
+        below, what the archives selected need. Returns ([paths], backup) or None."""
         top = tk.Toplevel(self.root)
         top.withdraw()
         top.title("Compact the game archives")
@@ -1053,55 +1054,78 @@ class InstallerWindow(object):
         ttk.Label(body, text="Compact the game archives?", style="DialogInfo.TLabel").pack(anchor="w")
         width = 92                                   # characters
         intro = ReadOnlyText(body, CARD, width=width)
-        intro.set("Each archive ticked is rewritten whole, with only the files it holds today: the space left by "
+        intro.set("Each archive selected is rewritten whole, with only the files it holds today: the space left by "
                   "the files removed or replaced since it was made is freed. The game reads exactly the same "
-                  "files afterwards, same names and same content (the installer's receipts included). Archives "
-                  "left unticked, and Blizzard's, are not touched.\n\nThe game and the worldserver must stay "
-                  "closed. Each archive is written beside itself, compared with the old one, then put in its "
-                  "place: until then the old one is intact.")
+                  "files afterwards, same names and same content (the installer's receipts included). The other "
+                  "archives, and Blizzard's, are not touched.\n\nThe game must stay closed; the server does not "
+                  "matter, it does not read these archives. Each archive is written beside itself, compared with "
+                  "the old one, then put in its place: until then the old one is intact.")
         intro.pack(anchor="w", pady=(8, 12))
         self.copyable_text(intro)
-        ticks = []
-        for entry in entries:
-            p, size, after, kept, error = entry
-            var = tk.BooleanVar(value=not error and core.patch_letter(p) == core.DEFAULT_COMPACTED)
-            box = ttk.Checkbutton(body, text=core.compaction_line(client, entry), variable=var,
-                                  style="Dialog.TCheckbutton", state="disabled" if error else "normal")
-            box.pack(anchor="w", pady=1)
-            ticks.append((var, entry))
+        # the archives, 10 rows shown, more by scrolling; a click selects or deselects one
+        ttk.Label(body, text="Archives to compact (a click selects or deselects one):",
+                  style="Dialog.TLabel").pack(anchor="w")
+        box = ttk.Frame(body, style="Dialog.TFrame")
+        box.pack(fill="x", pady=(4, 0))
+        listing = tk.Listbox(box, selectmode="multiple", height=10, width=width, activestyle="none",
+                             exportselection=False, font=("Segoe UI", 9), relief="flat", borderwidth=0,
+                             background=FIELD, foreground=TEXT, selectbackground=SELECTED, selectforeground=TEXT,
+                             highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT)
+        scroll = ttk.Scrollbar(box, orient="vertical", command=listing.yview)
+        listing.configure(yscrollcommand=scroll.set)
+        listing.pack(side="left", fill="x", expand=True)
+        scroll.pack(side="right", fill="y")
+        for k, entry in enumerate(entries):
+            listing.insert("end", core.compaction_line(client, entry))
+            if entry[4]:
+                listing.itemconfigure(k, foreground=MUTED, selectforeground=MUTED)
+            elif core.patch_letter(entry[0]) == core.DEFAULT_COMPACTED:
+                listing.selection_set(k)
+        first = listing.curselection()
+        if first:
+            listing.see(first[0])
         summary = ReadOnlyText(body, CARD, width=width)
         summary.pack(anchor="w", pady=(12, 12))
         self.copyable_text(summary)
         backup = tk.BooleanVar(value=True)
-        ttk.Checkbutton(body, text="Back up first the archives ticked (<name>.backup-<date>-<time>, beside each)",
+        ttk.Checkbutton(body, text="Back up first the archives selected (<name>.backup-<date>-<time>, beside each)",
                         variable=backup, style="Dialog.TCheckbutton").pack(anchor="w", pady=(0, 16))
         row = ttk.Frame(body, style="Dialog.TFrame")
         row.pack(fill="x")
         cancel = ttk.Button(row, text="Cancel", command=top.destroy)
         cancel.pack(side="right", padx=(8, 0))
+
+        def selected():
+            return [entries[k] for k in listing.curselection()]
+
         go = ttk.Button(row, text="Compact", style="Accent.TButton",
-                        command=lambda: (answer.update(value=([e[0] for v, e in ticks if v.get()], backup.get())),
+                        command=lambda: (answer.update(value=([e[0] for e in selected()], backup.get())),
                                          top.destroy()))
         go.pack(side="right", padx=(8, 0))
 
         def update(*_):
-            plan = [e[:4] for v, e in ticks if v.get()]
+            for k in listing.curselection():
+                if entries[k][4]:                    # it cannot be compacted: not selectable
+                    listing.selection_clear(k)
+            plan = [e[:4] for e in selected()]
             go.configure(state="normal" if plan else "disabled")
             if not plan:
-                summary.set("No archive ticked.")
+                summary.set("No archive selected.")
                 return
-            summary.set("%d archive%s ticked: about %s. Free space needed: %s, %s more with the backup. It takes %s; "
-                        "the time grows with the files the archives keep."
+            summary.set("%d archive%s selected: about %s. Free space needed: %s, %s more with the backup. It takes "
+                        "%s; the time grows with the files the archives keep."
                         % (len(plan), "s" if len(plan) > 1 else "",
                            core.freed_text(sum(size - after for p, size, after, kept in plan)),
                            core.size_text(sum(core.compaction_space(plan, False).values())),
                            core.size_text(sum(size for p, size, after, kept in plan)), core.compaction_time(plan)))
-        for var, _ in ticks:
-            var.trace_add("write", update)
+        listing.bind("<<ListboxSelect>>", update)
         update()
+
         def whole():
-            boxes = [("[x] " if v.get() else "[ ] ") + core.compaction_line(client, e) for v, e in ticks]
-            return "\n\n".join([intro.get("1.0", "end-1c"), "\n".join(boxes), summary.get("1.0", "end-1c")])
+            chosen = set(listing.curselection())
+            lines = [("[x] " if k in chosen else "[ ] ") + core.compaction_line(client, e)
+                     for k, e in enumerate(entries)]
+            return "\n\n".join([intro.get("1.0", "end-1c"), "\n".join(lines), summary.get("1.0", "end-1c")])
         # Ctrl+C with the focus on a button copies the whole dialog, as Windows does
         for key in ("<Control-c>", "<Control-C>"):
             top.bind(key, lambda _: self.copy(whole()))

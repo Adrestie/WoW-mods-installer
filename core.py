@@ -55,7 +55,6 @@ import sys
 import tempfile
 import time
 import traceback
-import types
 
 import mpq_archive
 import wow_exe
@@ -1466,17 +1465,6 @@ def compaction_line(client, entry):
                                                         size_text(after), freed_text(size - after))
 
 
-def refuse_compaction_while_running(client, server_folder):
-    """As refuse_while_running: the worldserver of server_folder, or any worldserver when it is not known."""
-    if server_folder and os.path.isfile(os.path.join(server_folder, "worldserver.exe")):
-        refuse_while_running(types.SimpleNamespace(bin=os.path.normpath(os.path.abspath(server_folder))), client)
-        return
-    ws = [p or n for n, p in running_processes() if n.lower() == "worldserver.exe"]
-    if ws:
-        raise InstallerError("a worldserver is running (%s): stop it, then run the installer again" % ", ".join(ws))
-    refuse_while_running(None, client)
-
-
 def compact(client, paths, backup=True):
     """Rewrites each archive of paths, among those a compaction may rewrite, with only the files it holds
     (mpq_archive.compact_archive): the game reads the same files, the space left by the files removed or
@@ -2488,7 +2476,7 @@ def run_compact(args, settings):
     if not args.yes:
         say("--yes compacts them (--no-backup: without copying them first; --compact patch-Y: another patch).")
         return 0
-    refuse_compaction_while_running(client, args.server if args.server is not None else settings.get("server"))
+    refuse_while_running(None, client)                # the game reads them; the server does not
     heading("Compacting")
     compact(client, [p for p, _, _, _ in plan], backup=backup)
     say()

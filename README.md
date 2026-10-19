@@ -58,7 +58,8 @@ right-click menu; Ctrl+C on a dialog copies its whole message.
   load; this does not uninstall the mod, and giving them back their names
   turns it on again.
 
-It refuses to write anything while the worldserver or the game is running.
+It refuses to write anything while the worldserver or the game is running (a
+compaction, below, only while the game is).
 
 Only the archives the game loads count: in `Data`, the base archives,
 `patch.MPQ` and `patch-?.MPQ` (one character); in the language folder, its base
@@ -83,19 +84,21 @@ drive holds the copies and the data about to be written.
 
 Writing into an archive leaves the space of the files it replaces or removes
 in place: over installs, updates and removals, `patch-Z.MPQ` grows far beyond
-what it holds. **Compact...**, beside **Check**, gives that space back. It is
-active once the game loads a custom patch archive (`patch-?.MPQ` of `Data`,
-`patch-xxXX-?.MPQ` of a language folder, not Blizzard's). It lists them, each
-with its size now, its size once compacted and the space freed; those of
-patch Z (`patch-Z.MPQ` and `patch-xxXX-Z.MPQ`) are ticked at first, any other
-can be ticked instead or as well. Below, it says what the archives ticked
-free, the disk space the work needs and about how long it takes. Once
-confirmed, it rewrites each archive ticked with only the files it holds. The
-game reads exactly the same files afterwards (same names, same bytes,
-receipts included). Each new archive is written beside the old one, compared
-with it, then put in its place: until then the old one is intact. It offers
-the same backup as above, ticked by default, and refuses while the
-worldserver or the game is running.
+what it holds. **Compact...**, at the bottom right of the window, gives that
+space back. It needs only the game folder: it is active once the game loads a
+custom patch archive (`patch-?.MPQ` of `Data`, `patch-xxXX-?.MPQ` of a
+language folder, not Blizzard's), whatever the module and the worldserver
+field. It lists them in a list of 10 rows that scrolls beyond, each with its
+size now, its size once compacted and the space freed; those of patch Z
+(`patch-Z.MPQ` and `patch-xxXX-Z.MPQ`) are selected at first, a click selects
+or deselects any other. Below, it says what the archives selected free, the
+disk space the work needs and about how long it takes. Once confirmed, it
+rewrites each archive selected with only the files it holds. The game reads
+exactly the same files afterwards (same names, same bytes, receipts
+included). Each new archive is written beside the old one, compared with it,
+then put in its place: until then the old one is intact. It offers the same
+backup as above, ticked by default, and refuses while the game is running;
+the worldserver does not read these archives and may keep running.
 
 A module that changes `Interface\GlueXML` or `Interface\FrameXML` needs a
 `Wow.exe` that does not check these files against Blizzard's signature:
