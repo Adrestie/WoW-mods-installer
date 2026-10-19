@@ -34,6 +34,10 @@ it writes to, the installer leaves a receipt (WoW-mods\<module>.receipt)
 listing what it put there; removal takes what its receipts name, the DBC rows
 identical to its own and the files stored under the module's own folders. An
 identical file provided by another archive is never its own.
+
+Compaction (--compact, or the window's Compact button) rewrites the custom
+patch archives chosen (patch-Z and patch-xxXX-Z by default) without the space
+their removed and replaced files left, the game reading the same files.
 """
 import argparse
 import array
@@ -51,6 +55,7 @@ import sys
 import tempfile
 import time
 import traceback
+import types
 
 import mpq_archive
 import wow_exe
@@ -1388,6 +1393,122 @@ def back_up_archives(paths, written=0):
             raise
 
 
+# ------------------------------------------------------------------ compaction
+
+# Bytes of kept files a compaction copies and compares per second, for the time it announces.
+COMPACTION_SPEED = 40e6
+# The patch compacted unless another is chosen: the one installs write into (NEW_ARCHIVE_NAME).
+DEFAULT_COMPACTED = "Z"
+
+
+def patch_letter(path):
+    """The letter of a patch-?.MPQ or patch-xxXX-?.MPQ archive (upper case), None for another name."""
+    m = re.match(r"^patch-(?:[a-z]{4}-)?([^-.])\.mpq$", os.path.basename(path), re.I)
+    return m.group(1).upper() if m else None
+
+
+def letter_of_choice(text):
+    """The letter given to --compact: "Y", "patch-Y", "patch-Y.MPQ" or "patch-xxXX-Y.MPQ"."""
+    text = (text or "").strip()
+    letter = text.upper() if len(text) == 1 else patch_letter(text if text.lower().endswith(".mpq")
+                                                              else text + ".MPQ")
+    if not letter:
+        raise InstallerError("%s is not a patch archive name (patch-Z, or its letter Z)" % text)
+    return letter
+
+
+def compactable_archives(client):
+    """The custom patch archives the game loads, in any of its languages (patch-?.MPQ of Data,
+    patch-xxXX-?.MPQ of a language folder, not Blizzard's): those a compaction may rewrite."""
+    return sorted((p for p in client.custom_archives() if patch_letter(p)), key=lambda p: p.lower())
+
+
+def compaction_survey(client):
+    """[(archive, size now, size once compacted or None, bytes of the files it keeps, why it cannot be
+    compacted or None)] of the archives a compaction may rewrite."""
+    found = []
+    for p in compactable_archives(client):
+        try:
+            found.append((p,) + mpq_archive.compacted_size(p) + (None,))
+        except (mpq_archive.MpqError, OSError, struct.error) as e:
+            found.append((p, os.path.getsize(p), None, 0, str(e)))
+    return found
+
+
+def compaction_space(plan, backup):
+    """{drive: bytes}: the compacted archives, each written beside the old one before it takes its place,
+    and with backup the copies of the archives as they are."""
+    need = {}
+    for p, size, after, kept in plan:
+        drive = os.path.splitdrive(os.path.abspath(p))[0].lower()
+        need[drive] = need.get(drive, 0) + after + (size if backup else 0)
+    return need
+
+
+def compaction_time(plan):
+    """The time a compaction takes, in words: it copies and compares the files the archives keep."""
+    seconds = sum(kept for p, size, after, kept in plan) / COMPACTION_SPEED
+    if seconds < 60:
+        return "under a minute"
+    return "about %d minute%s" % (round(seconds / 60), "s" if round(seconds / 60) > 1 else "")
+
+
+def freed_text(n):
+    return "%s freed" % size_text(n) if n > 0 else "nothing freed"
+
+
+def compaction_line(client, entry):
+    """One archive and what compacting it frees, in words (entry: from compaction_survey)."""
+    p, size, after, kept, error = entry
+    if error:
+        return "%s: %s, cannot be compacted (%s)" % (os.path.relpath(p, client.folder), size_text(size), error)
+    return "%s: %s now, about %s once compacted, %s" % (os.path.relpath(p, client.folder), size_text(size),
+                                                        size_text(after), freed_text(size - after))
+
+
+def refuse_compaction_while_running(client, server_folder):
+    """As refuse_while_running: the worldserver of server_folder, or any worldserver when it is not known."""
+    if server_folder and os.path.isfile(os.path.join(server_folder, "worldserver.exe")):
+        refuse_while_running(types.SimpleNamespace(bin=os.path.normpath(os.path.abspath(server_folder))), client)
+        return
+    ws = [p or n for n, p in running_processes() if n.lower() == "worldserver.exe"]
+    if ws:
+        raise InstallerError("a worldserver is running (%s): stop it, then run the installer again" % ", ".join(ws))
+    refuse_while_running(None, client)
+
+
+def compact(client, paths, backup=True):
+    """Rewrites each archive of paths, among those a compaction may rewrite, with only the files it holds
+    (mpq_archive.compact_archive): the game reads the same files, the space left by the files removed or
+    replaced is freed. With backup, each is first copied beside itself (back_up_archives). Returns the
+    bytes freed."""
+    allowed = {os.path.normcase(p) for p in compactable_archives(client)}
+    for p in paths:
+        if os.path.normcase(p) not in allowed:
+            raise InstallerError("%s is not a custom patch archive the game loads: it is not compacted" % p)
+    plan = [(p,) + mpq_archive.compacted_size(p) for p in paths]
+    if backup:
+        back_up_archives([p for p, _, _, _ in plan], written=sum(after for _, _, after, _ in plan))
+    else:
+        for drive, n in sorted(compaction_space(plan, False).items()):
+            folder = next(os.path.dirname(os.path.abspath(p)) for p, _, _, _ in plan
+                          if os.path.splitdrive(os.path.abspath(p))[0].lower() == drive)
+            free = shutil.disk_usage(folder).free
+            if free < n:
+                raise InstallerError("not enough free space on %s to compact the archives: %s needed, %s free"
+                                     % (drive or folder, size_text(n), size_text(free)))
+    freed = 0
+    for p, size, after, kept in plan:
+        say("  %s: rewriting %s of files..." % (p, size_text(kept)))
+        client.forget(p)
+        before, now = mpq_archive.compact_archive(p)
+        say("  %s: %s -> %s, %s" % (p, size_text(before), size_text(now), freed_text(before - now)))
+        freed += before - now
+    if len(plan) > 1:
+        say("  Total: %s" % freed_text(freed))
+    return freed
+
+
 # ------------------------------------------------------------------ removal
 
 def remove_tree(d):
@@ -2330,6 +2451,51 @@ def run_console(M, args, settings):
     return 0
 
 
+def run_compact(args, settings):
+    """--compact without window: the custom patch archives of the game, what compacting each one frees, and
+    those of the patch chosen (--compact patch-Y, Z by default); with --yes, compacts these. The game
+    folder comes from --client or is remembered. Returns the exit code."""
+    letter = letter_of_choice(args.compact)
+    say("Compaction of the game archives - WoW-mods installer")
+    say("=" * 60)
+    client = Client(args.client or settings.get("client") or "")
+    heading("Folders")
+    say("  %-16s %s" % ("game", client.folder))
+    settings["client"] = client.folder
+    save_settings(settings)
+    heading("Custom patch archives of the game")
+    survey = compaction_survey(client)
+    if not survey:
+        say("  None: the game loads no custom patch archive, nothing to compact.")
+        return 0
+    for entry in survey:
+        say("  %s %s" % ("*" if patch_letter(entry[0]) == letter else " ", compaction_line(client, entry)))
+    chosen = [e for e in survey if patch_letter(e[0]) == letter]
+    say()
+    if not chosen:
+        say("No archive of patch %s (patch-%s.MPQ, patch-xxXX-%s.MPQ): nothing to compact." % ((letter,) * 3))
+        return 1
+    refused = [e for e in chosen if e[4]]
+    if refused:
+        say("Stopped: %s cannot be compacted." % ", ".join(os.path.relpath(e[0], client.folder) for e in refused))
+        return 1
+    plan = [e[:4] for e in chosen]
+    backup = not args.no_backup
+    say("* patch %s: %s; disk space needed: %s%s; time: %s"
+        % (letter, freed_text(sum(size - after for p, size, after, kept in plan)),
+           size_text(sum(compaction_space(plan, backup).values())), " (backups included)" if backup else "",
+           compaction_time(plan)))
+    if not args.yes:
+        say("--yes compacts them (--no-backup: without copying them first; --compact patch-Y: another patch).")
+        return 0
+    refuse_compaction_while_running(client, args.server if args.server is not None else settings.get("server"))
+    heading("Compacting")
+    compact(client, [p for p, _, _, _ in plan], backup=backup)
+    say()
+    say("Done: the game reads the same files as before.")
+    return 0
+
+
 def folder_lines(M, server, client, dbs):
     """[(label, path)] of the places the installer works in."""
     lines = []
@@ -2427,8 +2593,14 @@ def main(load_manifest):
     p.add_argument("--disable-mods", action="store_true",
                    help="with --yes: disable the archives of another mod in conflict with the module (renamed "
                         ".disabled; this does not uninstall that mod), then go on")
+    p.add_argument("--compact", nargs="?", const=DEFAULT_COMPACTED, metavar="PATCH",
+                   help="no module: show what compacting the game's custom patch archives would free, those of "
+                        "PATCH (patch-Y, or its letter; Z by default) marked; with --yes, compact these (rewritten "
+                        "without the space of removed files, same content)")
     args = p.parse_args()
     settings = load_settings()
+    if args.compact is not None:
+        sys.exit(run_guarded(lambda: run_compact(args, settings)))
     if not (args.status or args.yes):
         import window
         window.run(module_folder(args.module) or args.module, settings, load_manifest)

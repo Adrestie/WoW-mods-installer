@@ -81,6 +81,22 @@ Before a game archive changes, it offers to copy it beside itself
 (`<name>.backup-<date>-<time>`), ticked by default, once it has checked that the
 drive holds the copies and the data about to be written.
 
+Writing into an archive leaves the space of the files it replaces or removes
+in place: over installs, updates and removals, `patch-Z.MPQ` grows far beyond
+what it holds. **Compact...**, beside **Check**, gives that space back. It is
+active once the game loads a custom patch archive (`patch-?.MPQ` of `Data`,
+`patch-xxXX-?.MPQ` of a language folder, not Blizzard's). It lists them, each
+with its size now, its size once compacted and the space freed; those of
+patch Z (`patch-Z.MPQ` and `patch-xxXX-Z.MPQ`) are ticked at first, any other
+can be ticked instead or as well. Below, it says what the archives ticked
+free, the disk space the work needs and about how long it takes. Once
+confirmed, it rewrites each archive ticked with only the files it holds. The
+game reads exactly the same files afterwards (same names, same bytes,
+receipts included). Each new archive is written beside the old one, compared
+with it, then put in its place: until then the old one is intact. It offers
+the same backup as above, ticked by default, and refuses while the
+worldserver or the game is running.
+
 A module that changes `Interface\GlueXML` or `Interface\FrameXML` needs a
 `Wow.exe` that does not check these files against Blizzard's signature:
 otherwise the game quits at start, saying its interface files are corrupt.
@@ -89,9 +105,9 @@ load, the installer offers to patch it: 2 bytes per check, after a copy,
 `Wow.exe.wow-mods.bak`. Removal turns the check back on once no archive the
 game loads changes these files. It refuses a `Wow.exe` it does not know.
 
-With `--status` or `--yes`, it runs without window, in the console of the
-program that started it, and asks nothing: the paths come from the options or
-from the remembered ones. From a batch file, `start /wait installer.exe ...`
+With `--status`, `--yes` or `--compact`, it runs without window, in the console
+of the program that started it, and asks nothing: the paths come from the
+options or from the remembered ones. From a batch file, `start /wait installer.exe ...`
 waits for it and gets its exit code (0 done, 1 stopped or failed, 2
 unexpected error).
 
@@ -109,6 +125,7 @@ unexpected error).
 | `--patch-wow-exe` | with `--yes`: patch `Wow.exe` when it would refuse the module's interface files |
 | `--no-backup` | with `--yes`: do not copy the game archives about to change |
 | `--disable-mods` | with `--yes`: disable the archives of another mod in conflict with the module (renamed `.disabled`; this does not uninstall that mod), then go on |
+| `--compact [PATCH]` | without module: show the game's custom patch archives and what compacting each frees, those of `PATCH` marked (`patch-Y`, or its letter; `Z` by default); with `--yes`, compact these (with `--no-backup`, without copying them first) |
 
 It also runs without being compiled: `python installer\installer.py [module]`
 (Python 3.12 or later, standard library only, tkinter included).

@@ -268,6 +268,11 @@ class InstallerWindow(object):
         bar.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self.check_button = ttk.Button(bar, text="Check", style="Accent.TButton", command=self.check)
         self.check_button.pack(side="right")
+        # active once the game folder holds a custom patch archive the game loads (refresh_compact)
+        self.compactable = []
+        self.compact_lookup = None
+        self.compact_button = ttk.Button(bar, text="Compact...", command=self.compact)
+        self.compact_button.pack(side="right", padx=(0, 8))
         self.places = ReadOnlyText(bar, BG, foreground=MUTED)
         self.places.pack(side="left", fill="x", expand=True, padx=(0, 12))
         self.copyable_text(self.places)
@@ -345,6 +350,7 @@ class InstallerWindow(object):
         dark_title_bar(root)
         root.deiconify()
         self.root.after(60, self.poll)
+        self.refresh_compact()
         if self.ready(quiet=True):
             self.root.after(200, self.check)
 
@@ -436,6 +442,7 @@ class InstallerWindow(object):
         self.action_button.configure(state="normal" if self.action and not self.working else "disabled")
         self.update_button.configure(state="disabled" if self.working else "normal")
         self.mods_button.configure(state="disabled" if self.working else "normal")
+        self.compact_button.configure(state="normal" if self.compactable and not self.working else "disabled")
 
     def dialog(self, title, text, buttons, kind="info", focus=0, option=None):
         """A modal dialog in the window's colours; buttons: [(label, value, style)], left to right, the one
@@ -473,23 +480,29 @@ class InstallerWindow(object):
                            command=lambda v=value: (chosen.update(value=v), top.destroy()))
             b.pack(side="right", padx=(8, 0))
             widgets.insert(0, b)
+        self.show_modal(top, [message], widgets[focus])
+        return (chosen["value"], ticked.get()) if option else chosen["value"]
+
+    def show_modal(self, top, texts, focus):
+        """Shows a dialog built hidden over the window and waits until it is closed; texts: its
+        ReadOnlyText, fitted to their real width before it is placed; focus: the widget with the focus."""
         top.bind("<Escape>", lambda _: top.destroy())
         top.bind("<Return>", lambda _: top.focus_get().invoke() if hasattr(top.focus_get(), "invoke") else None)
         dark_title_bar(top)
-        # shown unseen first: the message wraps at its real width, then the dialog is placed
+        # shown unseen first: the texts wrap at their real width, then the dialog is placed
         top.attributes("-alpha", 0.0)
         top.deiconify()
         top.update_idletasks()
-        message.fit()
+        for text in texts:
+            text.fit()
         top.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() - top.winfo_reqwidth()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - top.winfo_reqheight()) // 3
         top.geometry("+%d+%d" % (max(0, x), max(0, y)))
         top.attributes("-alpha", 1.0)
         top.grab_set()
-        widgets[focus].focus_set()
+        focus.focus_set()
         self.root.wait_window(top)
-        return (chosen["value"], ticked.get()) if option else chosen["value"]
 
     # -- copying --------------------------------------------------------------
     def copy(self, text):
@@ -641,6 +654,8 @@ class InstallerWindow(object):
         if key == "module":
             self.place_fields()
         self.show_note(key)
+        if key == "client" and not self.working:
+            self.refresh_compact(delay=400)
         if self.filling or self.working:
             return
         self.context = None
@@ -689,6 +704,11 @@ class InstallerWindow(object):
                 if event[0] == "log":
                     self.write_log(event[1])
                     continue
+                if event[0] == "compactable":
+                    if event[1] == self.values()["client"]:
+                        self.compactable = event[2]
+                        self.update_buttons()
+                    continue
                 self.working = False
                 self.progress.stop()
                 self.progress.configure(mode="determinate", value=0)
@@ -717,6 +737,7 @@ class InstallerWindow(object):
         if self.pending_action:
             self.dialog("Failed", message[0].upper() + message[1:], [("Close", None, "TButton")], kind="error")
             self.pending_action = None
+            self.refresh_compact()
             self.check()
         else:
             self.context = None
@@ -956,7 +977,145 @@ class InstallerWindow(object):
             title = "Uninstallation complete" if action == "remove" else "Leftovers removed"
             text = "\n".join(core.build_steps(server)) if M.server_module else ""
         self.dialog(title, text or "Nothing else to do.", [("Close", None, "Accent.TButton")])
+        self.refresh_compact()
         self.check()
+
+    # -- compaction -----------------------------------------------------------
+    def refresh_compact(self, delay=0):
+        """Looks, in the background, for the custom patch archives of the game folder (the Compact button);
+        delay: milliseconds to wait first, the last call winning (typing in the field)."""
+        if self.compact_lookup is not None:
+            self.root.after_cancel(self.compact_lookup)
+        self.compact_lookup = self.root.after(delay, self.look_for_archives)
+
+    def look_for_archives(self):
+        self.compact_lookup = None
+        folder = self.values()["client"]
+
+        def target():
+            try:
+                found = core.compactable_archives(core.Client(folder)) if folder else []
+            except Exception:
+                found = []
+            self.events.put(("compactable", folder, found))
+        threading.Thread(target=target, daemon=True).start()
+
+    def compact(self):
+        """Reads what compacting each custom patch archive frees, lets the user choose them, then compacts
+        those chosen."""
+        if self.working or not self.compactable:
+            return
+        folder, server = self.values()["client"], self.values()["server"]
+
+        def survey():
+            client = core.Client(folder)
+            return client, core.compaction_survey(client)
+
+        def chosen(result):
+            client, entries = result
+            self.pending_action = None
+            if not entries:
+                self.compactable = []
+                self.dialog("Nothing to compact", "The game loads no custom patch archive.",
+                            [("Close", None, "TButton")])
+                return
+            answer = self.compact_dialog(client, entries)
+            if not answer:
+                return
+            paths, backup = answer
+
+            def job():
+                current = core.Client(client.folder)
+                core.refuse_compaction_while_running(current, server)
+                return core.compact(current, paths, backup=backup)
+
+            self.pending_action = "compact"
+            self.write_log("")
+            self.write_log("Compacting the game archives")
+            self.work("Compacting...", job, self.compacted)
+
+        self.pending_action = "compact"
+        self.work("Reading the archives...", survey, chosen)
+
+    def compact_dialog(self, client, entries):
+        """The archives to compact, ticked by the user: one box per custom patch archive the game loads,
+        with its size and what compacting it frees, those of patch Z ticked at first; below, what the
+        archives ticked need. Returns ([paths], backup) or None."""
+        top = tk.Toplevel(self.root)
+        top.withdraw()
+        top.title("Compact the game archives")
+        top.configure(bg=CARD)
+        top.transient(self.root)
+        top.resizable(False, False)
+        answer = {"value": None}
+        body = ttk.Frame(top, style="Dialog.TFrame", padding=(24, 18, 24, 16))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Compact the game archives?", style="DialogInfo.TLabel").pack(anchor="w")
+        width = 92                                   # characters
+        intro = ReadOnlyText(body, CARD, width=width)
+        intro.set("Each archive ticked is rewritten whole, with only the files it holds today: the space left by "
+                  "the files removed or replaced since it was made is freed. The game reads exactly the same "
+                  "files afterwards, same names and same content (the installer's receipts included). Archives "
+                  "left unticked, and Blizzard's, are not touched.\n\nThe game and the worldserver must stay "
+                  "closed. Each archive is written beside itself, compared with the old one, then put in its "
+                  "place: until then the old one is intact.")
+        intro.pack(anchor="w", pady=(8, 12))
+        self.copyable_text(intro)
+        ticks = []
+        for entry in entries:
+            p, size, after, kept, error = entry
+            var = tk.BooleanVar(value=not error and core.patch_letter(p) == core.DEFAULT_COMPACTED)
+            box = ttk.Checkbutton(body, text=core.compaction_line(client, entry), variable=var,
+                                  style="Dialog.TCheckbutton", state="disabled" if error else "normal")
+            box.pack(anchor="w", pady=1)
+            ticks.append((var, entry))
+        summary = ReadOnlyText(body, CARD, width=width)
+        summary.pack(anchor="w", pady=(12, 12))
+        self.copyable_text(summary)
+        backup = tk.BooleanVar(value=True)
+        ttk.Checkbutton(body, text="Back up first the archives ticked (<name>.backup-<date>-<time>, beside each)",
+                        variable=backup, style="Dialog.TCheckbutton").pack(anchor="w", pady=(0, 16))
+        row = ttk.Frame(body, style="Dialog.TFrame")
+        row.pack(fill="x")
+        cancel = ttk.Button(row, text="Cancel", command=top.destroy)
+        cancel.pack(side="right", padx=(8, 0))
+        go = ttk.Button(row, text="Compact", style="Accent.TButton",
+                        command=lambda: (answer.update(value=([e[0] for v, e in ticks if v.get()], backup.get())),
+                                         top.destroy()))
+        go.pack(side="right", padx=(8, 0))
+
+        def update(*_):
+            plan = [e[:4] for v, e in ticks if v.get()]
+            go.configure(state="normal" if plan else "disabled")
+            if not plan:
+                summary.set("No archive ticked.")
+                return
+            summary.set("%d archive%s ticked: about %s. Free space needed: %s, %s more with the backup. It takes %s; "
+                        "the time grows with the files the archives keep."
+                        % (len(plan), "s" if len(plan) > 1 else "",
+                           core.freed_text(sum(size - after for p, size, after, kept in plan)),
+                           core.size_text(sum(core.compaction_space(plan, False).values())),
+                           core.size_text(sum(size for p, size, after, kept in plan)), core.compaction_time(plan)))
+        for var, _ in ticks:
+            var.trace_add("write", update)
+        update()
+        def whole():
+            boxes = [("[x] " if v.get() else "[ ] ") + core.compaction_line(client, e) for v, e in ticks]
+            return "\n\n".join([intro.get("1.0", "end-1c"), "\n".join(boxes), summary.get("1.0", "end-1c")])
+        # Ctrl+C with the focus on a button copies the whole dialog, as Windows does
+        for key in ("<Control-c>", "<Control-C>"):
+            top.bind(key, lambda _: self.copy(whole()))
+        self.show_modal(top, [intro, summary], go if str(go.cget("state")) == "normal" else cancel)
+        return answer["value"]
+
+    def compacted(self, freed):
+        self.pending_action = None
+        freed = core.freed_text(freed)
+        self.dialog("Compaction complete", "%s%s. The game reads the same files as before."
+                    % (freed[0].upper(), freed[1:]), [("Close", None, "Accent.TButton")])
+        self.refresh_compact()
+        if self.ready(quiet=True):
+            self.check()
 
     def close(self):
         if self.working:

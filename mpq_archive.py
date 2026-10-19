@@ -14,7 +14,11 @@ the end of the file and the header is rewritten last, so an interruption
 before that final write leaves the previous archive intact. A replaced file
 keeps its block entry; a new file takes a free hash entry and a new block,
 and its name is added to (listfile). An existing (attributes) is kept up to
-date. The space of old file versions is not reclaimed.
+date. The space of old file versions is not reclaimed there.
+
+Compaction (compact_archive) gives it back: the archive is written again
+beside itself with only the files it holds, each with its stored bytes, then
+compared with the old one and put in its place.
 
 Refused before any byte is written: an unknown compression (PKWARE implode,
 LZMA, audio), a signed archive (strong "NGIS" signature), a full hash table,
@@ -218,7 +222,10 @@ class Archive(object):
         i = self._hash_index(name)
         if i is None:
             raise MpqError("%s is not in %s" % (name, self.path))
-        index = self.hash_table[i][4]
+        return self.read_block(self.hash_table[i][4], name)
+
+    def read_block(self, index, name):
+        """The content of the file of this block entry (name: for its key, when it is encrypted)."""
         position, packed_size, size, flags = self.block_table[index]
         position |= self.hi_blocks[index] << 32
         if flags & FILE_IMPLODE:
@@ -268,49 +275,78 @@ def _filetime_now():
     return int((time.time() + 11644473600) * 10000000)
 
 
-def _updated_attributes(raw, blocks_before, blocks_after, written):
-    """(attributes) resized for the new block table, with the checksums of the
-    written files.
+def _parse_attributes(raw, blocks):
+    """(version, flags, entries, patch-bit shape, crcs, times, md5s, tail) of an (attributes) file
+    written for a block table of this many blocks, or None for an unknown layout.
 
-    raw: current (attributes) content; blocks_before / blocks_after: block
-    table sizes; written: {block index: content}. The layouts recognised are
-    those StormLib accepts: as many entries as blocks or one fewer, and for the
-    patch bit a bit array, a word array or nothing. Returns None for an
-    unknown layout, and the file is then left as it is."""
+    The layouts recognised are those StormLib accepts: as many entries as blocks or one fewer, and for
+    the patch bit a bit array, a word array or nothing. crcs, times, md5s: lists, None when absent;
+    tail: the bytes after them (the patch bits)."""
     if len(raw) < 8:
         return None
     version, flags = struct.unpack_from("<II", raw)
     if version != 100 or flags & ~0xF:
         return None
-    per_entry = (4 if flags & ATTR_CRC32 else 0) + (8 if flags & ATTR_FILETIME else 0) + \
-                (16 if flags & ATTR_MD5 else 0)
+    per_entry = (4 if flags & ATTR_CRC32 else 0) + (8 if flags & ATTR_FILETIME else 0) +                 (16 if flags & ATTR_MD5 else 0)
     patch_bit = bool(flags & ATTR_PATCH_BIT)
     layouts = []                                 # (entries, shape of the patch-bit array)
-    layouts.append((blocks_before, "bits" if patch_bit else "none"))
-    layouts.append((blocks_before - 1, "bits" if patch_bit else "none"))
+    layouts.append((blocks, "bits" if patch_bit else "none"))
+    layouts.append((blocks - 1, "bits" if patch_bit else "none"))
     if patch_bit:
-        layouts.append((blocks_before, "none"))
-        layouts.append((blocks_before, "words"))
-    patch_size = {"none": lambda n: 0, "bits": lambda n: (n + 6) // 8, "words": lambda n: n * 4}
+        layouts.append((blocks, "none"))
+        layouts.append((blocks, "words"))
     for n, shape in layouts:
-        if n > 0 and len(raw) == 8 + n * per_entry + patch_size[shape](blocks_before):
+        if n > 0 and len(raw) == 8 + n * per_entry + PATCH_SIZE[shape](blocks):
             break
     else:
         return None
-    gap = blocks_before - n                      # 0 or 1: the same layout is kept
-    n2 = blocks_after - gap
     pos = 8
     crcs = times = md5s = None
     if flags & ATTR_CRC32:
-        crcs = list(struct.unpack_from("<%dI" % n, raw, pos)) + [0] * (n2 - n)
+        crcs = list(struct.unpack_from("<%dI" % n, raw, pos))
         pos += 4 * n
     if flags & ATTR_FILETIME:
-        times = list(struct.unpack_from("<%dQ" % n, raw, pos)) + [0] * (n2 - n)
+        times = list(struct.unpack_from("<%dQ" % n, raw, pos))
         pos += 8 * n
     if flags & ATTR_MD5:
-        md5s = [raw[pos + 16 * k:pos + 16 * (k + 1)] for k in range(n)] + [b"\0" * 16] * (n2 - n)
+        md5s = [raw[pos + 16 * k:pos + 16 * (k + 1)] for k in range(n)]
         pos += 16 * n
-    tail = raw[pos:]
+    return version, flags, n, shape, crcs, times, md5s, raw[pos:]
+
+
+PATCH_SIZE = {"none": lambda n: 0, "bits": lambda n: (n + 6) // 8, "words": lambda n: n * 4}
+
+
+def _attributes_bytes(version, flags, crcs, times, md5s, patch):
+    out = struct.pack("<II", version, flags)
+    if crcs is not None:
+        out += struct.pack("<%dI" % len(crcs), *crcs)
+    if times is not None:
+        out += struct.pack("<%dQ" % len(times), *times)
+    if md5s is not None:
+        out += b"".join(md5s)
+    return out + patch
+
+
+def _updated_attributes(raw, blocks_before, blocks_after, written):
+    """(attributes) resized for the new block table, with the checksums of the
+    written files.
+
+    raw: current (attributes) content; blocks_before / blocks_after: block
+    table sizes; written: {block index: content}. Returns None for an
+    unknown layout (_parse_attributes), and the file is then left as it is."""
+    parsed = _parse_attributes(raw, blocks_before)
+    if parsed is None:
+        return None
+    version, flags, n, shape, crcs, times, md5s, tail = parsed
+    gap = blocks_before - n                      # 0 or 1: the same layout is kept
+    n2 = blocks_after - gap
+    if crcs is not None:
+        crcs += [0] * (n2 - n)
+    if times is not None:
+        times += [0] * (n2 - n)
+    if md5s is not None:
+        md5s += [b"\0" * 16] * (n2 - n)
     now = _filetime_now()
     for index, content in written.items():
         if index < n2:
@@ -320,16 +356,35 @@ def _updated_attributes(raw, blocks_before, blocks_after, written):
                 times[index] = now
             if md5s is not None:
                 md5s[index] = hashlib.md5(content).digest()
-    out = struct.pack("<II", version, flags)
-    if crcs is not None:
-        out += struct.pack("<%dI" % n2, *crcs)
-    if times is not None:
-        out += struct.pack("<%dQ" % n2, *times)
-    if md5s is not None:
-        out += b"".join(md5s)
-    new_size = patch_size[shape](blocks_after)
-    out += tail[:new_size] + b"\0" * max(0, new_size - len(tail))
-    return out
+    new_size = PATCH_SIZE[shape](blocks_after)
+    return _attributes_bytes(version, flags, crcs, times, md5s,
+                             tail[:new_size] + b"\0" * max(0, new_size - len(tail)))
+
+
+def _remapped_attributes(raw, blocks_before, order):
+    """(attributes) for a block table rebuilt from these old block indices, in their new order, each
+    block keeping its checksums; None for an unknown layout."""
+    parsed = _parse_attributes(raw, blocks_before)
+    if parsed is None:
+        return None
+    version, flags, n, shape, crcs, times, md5s, tail = parsed
+    n2 = len(order) - (blocks_before - n)
+    pick = [order[k] for k in range(n2)]
+
+    def remap(values, empty):
+        return None if values is None else [values[i] if i < n else empty for i in pick]
+
+    patch = b""
+    if shape == "bits":
+        bits = bytearray(PATCH_SIZE["bits"](len(order)))
+        for k, i in enumerate(order):
+            if i // 8 < len(tail) and tail[i // 8] & (0x80 >> (i % 8)):
+                bits[k // 8] |= 0x80 >> (k % 8)
+        patch = bytes(bits)
+    elif shape == "words":
+        words = struct.unpack_from("<%dI" % blocks_before, tail)
+        patch = struct.pack("<%dI" % len(order), *[words[i] for i in order])
+    return _attributes_bytes(version, flags, remap(crcs, 0), remap(times, 0), remap(md5s, b"\0" * 16), patch)
 
 
 def has_room(path, sizes):
@@ -492,3 +547,213 @@ def create_archive(path, files, hash_entries=1024):
         f.write(b"".join(chunks))
         f.write(encrypt(b"".join(struct.pack("<IIHHI", *e) for e in hash_table), HASH_TABLE_KEY))
         f.write(encrypt(b"".join(struct.pack("<IIII", *b) for b in blocks), BLOCK_TABLE_KEY))
+
+
+# ------------------------------------------------------------------ compaction
+
+def _file_key(name, position, size, flags):
+    """The key of an encrypted file stored at this position."""
+    key = hash_string(name.replace("/", "\\").split("\\")[-1], 3)
+    if flags & FILE_FIX_KEY:
+        key = ((key + (position & M32)) ^ size) & M32
+    return key
+
+
+def _recrypt(data, flags, size, sector_size, old_key, new_key):
+    """A stored encrypted file, encrypted again with another key; its bytes are otherwise the same."""
+    if flags & FILE_SINGLE_UNIT:
+        return encrypt(decrypt(data, old_key), new_key)
+    count = (size + sector_size - 1) // sector_size
+    out = bytearray(data)
+    if flags & (FILE_COMPRESS | FILE_IMPLODE):
+        n = count + 1 + (1 if flags & FILE_SECTOR_CRC else 0)
+        table = decrypt(data[:n * 4], (old_key - 1) & M32)
+        out[:n * 4] = encrypt(table, (new_key - 1) & M32)
+        offsets = struct.unpack("<%dI" % n, table)
+        bounds = [(offsets[s], offsets[s + 1]) for s in range(count)]
+    else:
+        bounds = [(s * sector_size, min(len(data), (s + 1) * sector_size)) for s in range(count)]
+    for s, (start, end) in enumerate(bounds):
+        out[start:end] = encrypt(decrypt(data[start:end], (old_key + s) & M32), (new_key + s) & M32)
+    return bytes(out)
+
+
+def _live_entries(a):
+    """[hash index] of the entries that lead to a file (a deletion marker of a patch archive included)."""
+    return [i for i, e in enumerate(a.hash_table)
+            if e[4] < a.block_count and a.block_table[e[4]][3] & FILE_EXISTS]
+
+
+def _known_names(a, names):
+    """{(hash 1, hash 2): name} of the names of (listfile), of the special files and of names."""
+    listed = _listfile_names(a.read("(listfile)").decode("latin-1")) if a.contains("(listfile)") else []
+    found = {}
+    for n in list(names) + listed + ["(listfile)", "(attributes)", "(signature)"]:
+        n = n.strip().replace("/", "\\")
+        found.setdefault((hash_string(n, 1), hash_string(n, 2)), n)
+    return found
+
+
+def _compaction(a, names=()):
+    """The compacted archive, worked out in memory: {"order": old block indices in their new order (that
+    of their place in the file), "blocks", "hi_blocks", "positions" (of the blocks of order), "hash_table",
+    "stored" {old block index: (bytes stored anew, size)}, "name_of_block" {old block index: name}, "hash_pos",
+    "block_pos", "hi_pos", "end"}, places relative to the start of the archive.
+
+    The hash table is rebuilt without its deleted entries when every file has a known name ((listfile),
+    the special files, names), twice as large while it would be more than three quarters full; otherwise
+    it keeps its layout, the entries of the files gone marked deleted."""
+    if a.signed:
+        raise MpqError("%s carries a strong signature: changing it would invalidate it" % a.path)
+    live = _live_entries(a)
+    known = _known_names(a, names)
+    named = {i: known.get((a.hash_table[i][0], a.hash_table[i][1])) for i in live}
+    order = sorted({a.hash_table[i][4] for i in live},
+                   key=lambda b: ((a.hi_blocks[b] << 32) | a.block_table[b][0], b))
+    new_index = {b: k for k, b in enumerate(order)}
+    name_of_block = {a.hash_table[i][4]: named[i] for i in live if named[i]}
+    for b in order:
+        if a.block_table[b][3] & FILE_ENCRYPTED and a.block_table[b][3] & FILE_FIX_KEY and b not in name_of_block:
+            raise MpqError("%s: a file whose key depends on its place has no known name, it cannot be moved"
+                           % a.path)
+
+    stored = {}
+    attributes = next((b for b, n in name_of_block.items() if n == "(attributes)"), None)
+    if attributes is not None:
+        content = _remapped_attributes(a.read_block(attributes, "(attributes)"), a.block_count, order)
+        if content is None:
+            raise MpqError("%s: its (attributes) has a layout the installer does not know" % a.path)
+        stored[attributes] = (_compress_sectors(content, a.sector_size), len(content))
+
+    if all(named[i] for i in live):
+        size = a.hash_count
+        while (len(live) + 1) * 4 > size * 3:
+            size *= 2
+        hash_table = [[M32, M32, 0xFFFF, 0xFFFF, HASH_ENTRY_EMPTY] for _ in range(size)]
+        for i in live:
+            e = a.hash_table[i]
+            j = hash_string(named[i], 0) & (size - 1)
+            while hash_table[j][4] != HASH_ENTRY_EMPTY:
+                j = (j + 1) & (size - 1)
+            hash_table[j] = [e[0], e[1], e[2], e[3], new_index[e[4]]]
+    else:
+        hash_table = []
+        for i, e in enumerate(a.hash_table):
+            if i in named:
+                hash_table.append([e[0], e[1], e[2], e[3], new_index[e[4]]])
+            elif e[4] == HASH_ENTRY_EMPTY:
+                hash_table.append(list(e))
+            else:
+                hash_table.append([M32, M32, 0xFFFF, 0xFFFF, HASH_ENTRY_DELETED])
+
+    with open(a.path, "rb") as f:
+        f.seek(a.offset + 4)
+        pos = struct.unpack("<I", f.read(4))[0]          # the size of the header: the files follow it
+    positions, blocks = [], []
+    for b in order:
+        position, packed, size, flags = a.block_table[b]
+        if b in stored:
+            packed, size, flags = len(stored[b][0]), stored[b][1], FILE_EXISTS | FILE_COMPRESS
+        positions.append(pos)
+        blocks.append([pos & M32, packed, size, flags])
+        pos += packed
+    hi_blocks = [p >> 32 for p in positions]
+    hash_pos = pos
+    block_pos = hash_pos + len(hash_table) * 16
+    end = block_pos + len(blocks) * 16
+    hi_pos = 0
+    if a.version == 1 and any(hi_blocks):
+        hi_pos = end
+        end += len(hi_blocks) * 2
+    if a.version == 0 and end > M32:
+        raise MpqError("%s: a v1 archive cannot exceed 4 GB" % a.path)
+    return {"order": order, "blocks": blocks, "hi_blocks": hi_blocks, "positions": positions,
+            "hash_table": hash_table, "stored": stored, "name_of_block": name_of_block,
+            "hash_pos": hash_pos, "block_pos": block_pos, "hi_pos": hi_pos, "end": end}
+
+
+def compacted_size(path, names=()):
+    """(size of the file now, its size once compacted, bytes of the files it keeps); writes nothing."""
+    a = Archive(path)
+    c = _compaction(a, names)
+    return a.file_size, a.offset + c["end"], sum(b[1] for b in c["blocks"])
+
+
+def _same_files(a, b, name_of_block):
+    """Raises MpqError unless archive b leads every entry of archive a (name, language, platform) to the
+    same file: same sizes and flags, same stored bytes, or the same content once read for a file
+    encrypted again; and finds each known name the same way. (attributes), rewritten, only has to read."""
+    def entries(x):
+        return {tuple(x.hash_table[i][:4]): x.hash_table[i][4] for i in _live_entries(x)}
+    old, new = entries(a), entries(b)
+    if set(old) != set(new):
+        raise MpqError("%s: the compacted copy does not hold the same files" % a.path)
+    with open(a.path, "rb") as fa, open(b.path, "rb") as fb:
+        for key, i in old.items():
+            j = new[key]
+            name = name_of_block.get(i)
+            if name == "(attributes)":
+                b.read_block(j, name)                     # rewritten: it must still read
+                continue
+            ob, nb = a.block_table[i], b.block_table[j]
+            if ob[1:] != nb[1:]:
+                raise MpqError("%s: %s differs in the compacted copy" % (a.path, name or "a file"))
+            if ob[3] & FILE_ENCRYPTED and ob[3] & FILE_FIX_KEY:
+                same = a.read_block(i, name) == b.read_block(j, name)
+            else:
+                fa.seek(a.offset + ((a.hi_blocks[i] << 32) | ob[0]))
+                fb.seek(b.offset + ((b.hi_blocks[j] << 32) | nb[0]))
+                same = fa.read(ob[1]) == fb.read(nb[1])
+            if not same:
+                raise MpqError("%s: %s differs in the compacted copy" % (a.path, name or "a file"))
+    for name in set(name_of_block.values()):
+        if a.contains(name) != b.contains(name) or \
+                (a.contains(name) and name != "(attributes)" and a.size(name) != b.size(name)):
+            raise MpqError("%s: %s is not found the same way in the compacted copy" % (a.path, name))
+
+
+def compact_archive(path, names=()):
+    """Rewrites the archive with the files it holds and nothing else: the space left by the files removed
+    or replaced, and by the tables of earlier writes, is given back. Every file keeps its name, language
+    and stored bytes (one whose key depends on its place is encrypted again, same content); (listfile)
+    is unchanged, (attributes) follows the new block numbers. The new archive is written beside the old
+    one (<name>.compact-tmp), compared with it, then put in its place: until then the old one is intact.
+    names: file names known besides those of (listfile). Returns (size before, size after)."""
+    a = Archive(path)
+    c = _compaction(a, names)
+    temporary = path + ".compact-tmp"
+    try:
+        with open(path, "rb") as src, open(temporary, "wb") as out:
+            out.write(src.read(a.offset))                 # what precedes the archive (user data)
+            header = bytearray(src.read(c["positions"][0] if c["positions"] else c["hash_pos"]))
+            struct.pack_into("<I", header, 8, c["end"] & M32)
+            struct.pack_into("<II", header, 16, c["hash_pos"] & M32, c["block_pos"] & M32)
+            struct.pack_into("<II", header, 24, len(c["hash_table"]), len(c["blocks"]))
+            if a.version == 1:
+                struct.pack_into("<QHH", header, 32, c["hi_pos"], c["hash_pos"] >> 32, c["block_pos"] >> 32)
+            out.write(bytes(header))
+            for k, b in enumerate(c["order"]):
+                if b in c["stored"]:
+                    out.write(c["stored"][b][0])
+                    continue
+                position, packed, size, flags = a.block_table[b]
+                position |= a.hi_blocks[b] << 32
+                src.seek(a.offset + position)
+                data = src.read(packed)
+                if flags & FILE_ENCRYPTED and flags & FILE_FIX_KEY:
+                    name = c["name_of_block"][b]
+                    data = _recrypt(data, flags, size, a.sector_size, _file_key(name, position, size, flags),
+                                    _file_key(name, c["positions"][k], size, flags))
+                out.write(data)
+            out.write(encrypt(b"".join(struct.pack("<IIHHI", *e) for e in c["hash_table"]), HASH_TABLE_KEY))
+            out.write(encrypt(b"".join(struct.pack("<IIII", *e) for e in c["blocks"]), BLOCK_TABLE_KEY))
+            if c["hi_pos"]:
+                out.write(struct.pack("<%dH" % len(c["hi_blocks"]), *c["hi_blocks"]))
+            out.flush()
+            os.fsync(out.fileno())
+        _same_files(a, Archive(temporary), c["name_of_block"])
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return a.file_size, a.offset + c["end"]
