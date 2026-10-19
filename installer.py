@@ -3,6 +3,7 @@
 
     installer.exe [module folder]                     the window
     installer.exe module folder --status | --yes ...  the console, no questions
+    installer.exe --compact [patch-Y] [--yes]         compacts a patch of the game (Z by default)
 
 A module folder dropped on installer.exe opens the window on it. Built by
 build.cmd; also runs as is: python installer\\installer.py [folder]."""
@@ -24,6 +25,6 @@ def console_output():
 
 
 if __name__ == "__main__":
-    if "--status" in sys.argv or "--yes" in sys.argv:
+    if "--status" in sys.argv or "--yes" in sys.argv or "--compact" in sys.argv:
         console_output()
     core.main(manifest.load)
