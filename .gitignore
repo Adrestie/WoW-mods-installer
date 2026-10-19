@@ -2,3 +2,6 @@
 installer.exe
 build/
 __pycache__/
+# Built by build_editor.cmd
+loot-editor.exe
+build-editor/
