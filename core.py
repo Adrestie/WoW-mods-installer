@@ -1460,12 +1460,12 @@ def freed_text(n):
 
 
 def compaction_line(client, entry):
-    """One archive and what compacting it frees, in words (entry: from compaction_survey)."""
+    """One archive and the space compacting it recovers, in words (entry: from compaction_survey)."""
     p, size, after, kept, error = entry
     if error:
-        return "%s: %s, cannot be compacted (%s)" % (os.path.relpath(p, client.folder), size_text(size), error)
-    return "%s: %s now, about %s once compacted, %s" % (os.path.relpath(p, client.folder), size_text(size),
-                                                        size_text(after), freed_text(size - after))
+        return "%s — cannot be compacted (%s)" % (os.path.relpath(p, client.folder), error)
+    return "%s — %s" % (os.path.relpath(p, client.folder),
+                             "%s recoverable" % size_text(size - after) if size > after else "nothing to recover")
 
 
 def compact(client, paths, backup=True):

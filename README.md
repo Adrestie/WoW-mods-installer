@@ -88,8 +88,8 @@ what it holds. **Compact...**, at the bottom right of the window, gives that
 space back. It needs only the game folder: it is active once the game loads a
 custom patch archive (`patch-?.MPQ` of `Data`, `patch-xxXX-?.MPQ` of a
 language folder, not Blizzard's), whatever the module and the worldserver
-field. It lists them in a list of 10 rows that scrolls beyond, each with its
-size now, its size once compacted and the space freed; those of patch Z
+field. It lists them in a list of 10 rows that scrolls beyond, each with the
+space compacting it recovers; those of patch Z
 (`patch-Z.MPQ` and `patch-xxXX-Z.MPQ`) are selected at first, a click selects
 or deselects any other. Below, it says what the archives selected free, the
 disk space the work needs and about how long it takes. Once confirmed, it
@@ -131,7 +131,7 @@ unexpected error).
 | `--patch-wow-exe` | with `--yes`: patch `Wow.exe` when it would refuse the module's interface files |
 | `--no-backup` | with `--yes`: do not copy the game archives about to change |
 | `--disable-mods` | with `--yes`: disable the archives of another mod in conflict with the module (renamed `.disabled`; this does not uninstall that mod), then go on |
-| `--compact [PATCH]` | without module: show the game's custom patch archives and what compacting each frees, those of `PATCH` marked (`patch-Y`, or its letter; `Z` by default); with `--yes`, compact these (with `--no-backup`, without copying them first) |
+| `--compact [PATCH]` | without module: show the game's custom patch archives and the space compacting each recovers, those of `PATCH` marked (`patch-Y`, or its letter; `Z` by default); with `--yes`, compact these (with `--no-backup`, without copying them first) |
 
 It also runs without being compiled: `python installer\installer.py [module]`
 (Python 3.12 or later, standard library only, tkinter included).
