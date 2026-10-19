@@ -98,7 +98,10 @@ exactly the same files afterwards (same names, same bytes, receipts
 included). Each new archive is written beside the old one, compared with it,
 then put in its place: until then the old one is intact. It offers the same
 backup as above, ticked by default, and refuses while the game is running;
-the worldserver does not read these archives and may keep running.
+the worldserver does not read these archives and may keep running. When it
+has made backups, the end of the compaction lists them, with their sizes:
+start the game, check that everything works as before, then delete them by
+hand (the installer never removes them).
 
 A module that changes `Interface\GlueXML` or `Interface\FrameXML` needs a
 `Wow.exe` that does not check these files against Blizzard's signature:

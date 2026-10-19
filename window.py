@@ -1132,11 +1132,14 @@ class InstallerWindow(object):
         self.show_modal(top, [intro, summary], go if str(go.cget("state")) == "normal" else cancel)
         return answer["value"]
 
-    def compacted(self, freed):
+    def compacted(self, result):
+        freed, copies = result
         self.pending_action = None
         freed = core.freed_text(freed)
-        self.dialog("Compaction complete", "%s%s. The game reads the same files as before."
-                    % (freed[0].upper(), freed[1:]), [("Close", None, "Accent.TButton")])
+        text = "%s%s. The game reads the same files as before." % (freed[0].upper(), freed[1:])
+        if copies:
+            text += "\n\n" + core.backups_text(copies)
+        self.dialog("Compaction complete", text, [("Close", None, "Accent.TButton")])
         self.refresh_compact()
         if self.ready(quiet=True):
             self.check()

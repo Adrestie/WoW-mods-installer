@@ -1360,10 +1360,10 @@ def archives_to_back_up(paths):
 def back_up_archives(paths, written=0):
     """Copies each existing archive of paths beside itself (<name>.backup-<date>-<time>) before it
     changes, once each drive is known to hold the copies and the data about to be written
-    (written: bytes, counted on every drive that holds one of the archives)."""
+    (written: bytes, counted on every drive that holds one of the archives). Returns the copies made."""
     archives = archives_to_back_up(paths)
     if not archives:
-        return
+        return []
     need = {}
     for p, size in archives:
         drive = os.path.splitdrive(os.path.abspath(p))[0].lower()
@@ -1377,6 +1377,7 @@ def back_up_archives(paths, written=0):
                                  "(the copies and the data to write), %s free. Free some space, or go on without "
                                  "the backup" % (drive or folder, size_text(n), size_text(free)))
     stamp = time.strftime("%Y%m%d-%H%M%S")
+    copies = []
     for p, size in archives:
         copy = "%s.backup-%s" % (p, stamp)
         k = 2
@@ -1390,6 +1391,8 @@ def back_up_archives(paths, written=0):
             if os.path.exists(copy):
                 os.remove(copy)
             raise
+        copies.append(copy)
+    return copies
 
 
 # ------------------------------------------------------------------ compaction
@@ -1468,15 +1471,16 @@ def compaction_line(client, entry):
 def compact(client, paths, backup=True):
     """Rewrites each archive of paths, among those a compaction may rewrite, with only the files it holds
     (mpq_archive.compact_archive): the game reads the same files, the space left by the files removed or
-    replaced is freed. With backup, each is first copied beside itself (back_up_archives). Returns the
-    bytes freed."""
+    replaced is freed. With backup, each is first copied beside itself (back_up_archives). Returns (bytes
+    freed, [backup copies made])."""
     allowed = {os.path.normcase(p) for p in compactable_archives(client)}
     for p in paths:
         if os.path.normcase(p) not in allowed:
             raise InstallerError("%s is not a custom patch archive the game loads: it is not compacted" % p)
     plan = [(p,) + mpq_archive.compacted_size(p) for p in paths]
+    copies = []
     if backup:
-        back_up_archives([p for p, _, _, _ in plan], written=sum(after for _, _, after, _ in plan))
+        copies = back_up_archives([p for p, _, _, _ in plan], written=sum(after for _, _, after, _ in plan))
     else:
         for drive, n in sorted(compaction_space(plan, False).items()):
             folder = next(os.path.dirname(os.path.abspath(p)) for p, _, _, _ in plan
@@ -1494,7 +1498,16 @@ def compact(client, paths, backup=True):
         freed += before - now
     if len(plan) > 1:
         say("  Total: %s" % freed_text(freed))
-    return freed
+    return freed, copies
+
+
+def backups_text(copies):
+    """What to do with the backup copies of a compaction, in words."""
+    sizes = [os.path.getsize(c) if os.path.isfile(c) else 0 for c in copies]
+    return ("Start the game and check that everything works as before. Then delete by hand the backup cop%s "
+            "made, which the installer does not remove (%s in all):\n%s"
+            % ("y" if len(copies) == 1 else "ies", size_text(sum(sizes)),
+               "\n".join("%s (%s)" % (c, size_text(n)) for c, n in zip(copies, sizes))))
 
 
 # ------------------------------------------------------------------ removal
@@ -2478,9 +2491,12 @@ def run_compact(args, settings):
         return 0
     refuse_while_running(None, client)                # the game reads them; the server does not
     heading("Compacting")
-    compact(client, [p for p, _, _, _ in plan], backup=backup)
+    freed, copies = compact(client, [p for p, _, _, _ in plan], backup=backup)
     say()
     say("Done: the game reads the same files as before.")
+    if copies:
+        for line in backups_text(copies).splitlines():
+            say(line)
     return 0
 
 
