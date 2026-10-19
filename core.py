@@ -1669,7 +1669,8 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True, update=F
         if not desc or key not in dbs or (key not in state.db_strong and key not in state.db_weak):
             continue
         db = dbs[key]
-        existing = db.existing_tables(list(desc.get("tables", [])) + [t for t, _ in desc.get("rows", [])])
+        existing = db.existing_tables(list(desc.get("tables", [])) + [t for t, _ in desc.get("rows", [])] +
+                                      [table for (table, _), _ in desc.get("before", [])])
         kept = {t.lower() for t in desc.get("kept_on_update", [])} if update else set()
         script = []
         # what is taken back before the tables go (talent points...) stays with the players on an update

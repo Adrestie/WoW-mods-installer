@@ -273,8 +273,10 @@ part: the installer writes its game files and its addons, adds its DBC rows
 applies its SQL itself. Nothing goes into the server's sources, configuration
 or Lua scripts, and the server needs no rebuild. `signature`,
 `exclude_from_sources`, `configuration`, `lua` and `shared` are refused;
-`database` holds `rows` only, and SQL in `data/sql` for a database needs its
-`rows`, so that removal deletes what the SQL adds. The worldserver folder
+`database` holds `rows` and `before` only, and SQL in `data/sql` for a
+database needs its `rows`, so that removal deletes what the SQL adds; `before`
+undoes on removal what it changes in rows that are not its own (a flag it
+sets on a creature of the game, for instance). The worldserver folder
 gives the server DBC folder and the databases, and nothing is written while
 the worldserver runs.
 
