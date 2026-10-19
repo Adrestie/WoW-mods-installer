@@ -456,8 +456,9 @@ def load(root):
     M.backups = list(m.get("backups", []))
     M.databases = _databases(M.root, M, m.get("database"))
     if not M.server_module:
-        if any(d["tables"] or d["before"] for d in M.databases.values()):
-            _error("database", 'a package without server module holds "rows" only')
+        # no tables of its own; "before" may undo on removal what its SQL changed in shared rows
+        if any(d["tables"] for d in M.databases.values()):
+            _error("database", 'a package without server module holds "rows" and "before" only')
         # The installer applies this SQL itself: removal must know the rows it adds.
         for key in ("world", "characters"):
             if module_sql_files(M, key) and not M.databases.get(key, {}).get("rows"):
