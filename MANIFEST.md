@@ -26,6 +26,7 @@ Paths inside the package are relative to the module folder, with `/`.
 | `dbc` | no | the module's DBC rows, see below |
 | `game_files` | no | files written into the game archives, see below |
 | `addons` | no | addon folders copied into the game's `Interface\AddOns`, see below |
+| `extensions` | no | WarcraftXL extension folders copied into the game's `Extensions`, see below |
 | `server_data` | no | files of the worldserver's `Data` folder (maps, vmaps, mmaps), see below |
 | `backups` | no | suffixes of backup files left by older tools (e.g. `".avant_item_upgrade"`), deleted on removal |
 | `database` | no | what the module leaves in the database, see below |
@@ -74,7 +75,7 @@ Each field must match the rest of the manifest, or the manifest is refused:
 
 | Field | Declared exactly when | Optional |
 |---|---|---|
-| `game` | the module has `game_files`, `addons` or client DBC rows | never |
+| `game` | the module has `game_files`, `addons`, `extensions` or client DBC rows | never |
 | `worldserver` | a server module, server DBC rows, `database` or `server_data` | for a package without server module: left empty, the server part is left out (see below) |
 | `sources` | a server module | never |
 | `mysql` | SQL in `data/sql`, or `database` | exactly when `worldserver` is |
@@ -230,6 +231,19 @@ at least one of the module's game files.
 Package folders copied as they are into `Interface\AddOns` of the game folder
 (`Interface\AddOns\ForeverUI`); each holds the `.toc` named after it. On
 removal the folder is deleted.
+
+### extensions
+
+```json
+"extensions": ["client/dist/wxl-transmog-retail"]
+```
+
+WarcraftXL extensions: package folders copied as they are into `Extensions`
+of the game folder (`Extensions\wxl-transmog-retail`), where WarcraftXL loads
+`<id>\<id>.dll`; each holds the `.dll` named after it (and its `wxl.json`).
+The install is refused when the game's Wow.exe does not load WarcraftXL (a
+`.wxl` section and `WarcraftXL.dll` beside it). On removal the folder is
+deleted.
 
 ### server_data
 
