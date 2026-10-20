@@ -1924,7 +1924,9 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None, 
         else:
             mpq_archive.write_into_archive(target, files)
         client.forget(target)
-        dbc_names = [n for n in files if n.startswith("DBFilesClient\\")]
+        # DBC files that take rows; a whole DBC file among the game files is a game file
+        dbc_names = [n for n in files if n.startswith("DBFilesClient\\")
+                     and any(d.file == n.split("\\")[-1] for d in M.dbc)]
         for name in dbc_names:
             f = name.split("\\")[-1]
             say("  %s, %s: %d row(s) added" % (target, f, len([d for d in M.dbc if d.file == f][0].client)))

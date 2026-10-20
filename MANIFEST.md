@@ -207,6 +207,11 @@ are written (`[".blp", ".m2"]`); previews or notes kept beside them stay out.
 `owned_folders`: game folders (at least two levels) that only the module
 uses: whatever a custom archive holds in them is the module's.
 
+A DBC file whose rows `dbc` cannot take (`CharBaseInfo.dbc`: rows of 2 bytes,
+without identifier) may be a game file, whole: `DBFilesClient\CharBaseInfo.dbc`
+of a source folder. It replaces the game's file, so it must hold the game's
+rows too.
+
 `replaces` (optional): files or folders of the module's game files that
 replace ON PURPOSE the version another custom archive provides (a pack of
 the player's, for instance): `["Interface/Glues/Models"]`. Such a file is no
