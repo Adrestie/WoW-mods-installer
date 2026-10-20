@@ -205,21 +205,6 @@ def _addons(root, entry):
 SERVER_DATA_FOLDERS = ("maps", "vmaps", "mmaps")
 
 
-def _extensions(root, entry):
-    """{extension id: package folder}: WarcraftXL extensions, folders copied as they are into
-    Extensions of the game; each holds the <id>.dll named after it."""
-    extensions = {}
-    for source in entry or []:
-        base = os.path.normpath(os.path.join(root, source))
-        name = os.path.basename(base)
-        if not os.path.isfile(os.path.join(base, name + ".dll")):
-            _error("extensions", "%s is not a WarcraftXL extension folder (no %s.dll in it)" % (source, name))
-        if name.lower() in {n.lower() for n in extensions}:
-            _error("extensions", "extension %s declared twice" % name)
-        extensions[name] = base
-    return extensions
-
-
 def _server_data(root, entry):
     """{path under the worldserver's Data folder, with /: package file}: package folders whose tree
     is the Data folder's (data/server/vmaps/449.vmtree is Data/vmaps/449.vmtree), maps, vmaps and
@@ -376,7 +361,7 @@ def _fields(entry, M):
             reasons[k] = v["optional"].strip()
         else:
             _error("fields", '%s: "required", or {"optional": "why it is optional"}' % k)
-    needs = {"game": bool(M.game_files or M.addons or M.extensions or any(d.client is not None for d in M.dbc)),
+    needs = {"game": bool(M.game_files or M.addons or any(d.client is not None for d in M.dbc)),
              "worldserver": M.server_module or any(d.server is not None for d in M.dbc) or bool(M.databases) or
                             bool(M.server_data),
              "sources": M.server_module,
@@ -467,7 +452,6 @@ def load(root):
     M.game_files, M.owned_folders = _game_files(M.root, m.get("game_files"))
     M.replaced = _replaced(M.game_files, m.get("game_files"))
     M.addons = _addons(M.root, m.get("addons"))
-    M.extensions = _extensions(M.root, m.get("extensions"))
     M.server_data = _server_data(M.root, m.get("server_data"))
     M.backups = list(m.get("backups", []))
     M.databases = _databases(M.root, M, m.get("database"))

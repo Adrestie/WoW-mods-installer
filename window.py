@@ -138,8 +138,7 @@ def install_parts(M, server, client):
     parts = ["sources"] + (["configuration"] if M.conf else []) + (["Lua scripts"] if M.lua else []) \
         if M.server_module else []
     if client is not None:
-        parts += (["game files"] if M.game_files else []) + (["addons"] if M.addons else []) + \
-            (["WarcraftXL extensions"] if M.extensions else [])
+        parts += (["game files"] if M.game_files else []) + (["addons"] if M.addons else [])
     if core.installed_dbc(M, server):
         parts.append("DBC rows")
     if M.server_module and core.has_sql(M):
@@ -887,8 +886,7 @@ class InstallerWindow(object):
         if action == "install":
             parts = ["the server sources, its configuration and Lua scripts"] if M.server_module else []
             if client is not None:
-                parts.append("the game archives (MPQ)" + (", Interface\\AddOns" if M.addons else "")
-                             + (", Extensions" if M.extensions else ""))
+                parts.append("the game archives (MPQ)" + (", Interface\\AddOns" if M.addons else ""))
             if server is not None and any(d.server is not None for d in M.dbc):
                 parts.append("the server DBC files")
             if dbs and not M.server_module:

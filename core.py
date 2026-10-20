@@ -821,7 +821,6 @@ class State(object):
         self.files = []              # (archive, name): named by the receipt, or under an owned folder
         self.backups = []            # backups left by older tools
         self.addons = []             # the module's addon folders in Interface\AddOns
-        self.extensions = []         # the module's WarcraftXL extension folders in Extensions
         self.server_data = None      # (receipt path, receipt): the module's files in the Data folder
         self.db_strong = {}          # {database: [(text, count)]}: module tables, updater rows
         # weak items
@@ -833,7 +832,7 @@ class State(object):
     def strong(self):
         return bool(self.sources or self.confs or self.lua or self.lua_dir or self.server_dbc or
                     self.receipts or self.client_dbc or self.files or self.backups or self.addons or
-                    self.extensions or self.server_data or self.db_strong)
+                    self.server_data or self.db_strong)
 
     def weak(self):
         return bool(self.server_conflicts or self.client_conflicts or self.file_conflicts or self.db_weak)
@@ -862,7 +861,6 @@ class State(object):
             out.append(("game files", "%s: %s" % (a, detail)))
         out += [("backup", s) for s in self.backups]
         out += [("addon", d) for d in self.addons]
-        out += [("WarcraftXL extension", d) for d in self.extensions]
         if self.server_data:
             path, receipt = self.server_data
             out.append(("server data", "%s: %d file(s) in the Data folder, %d original(s) kept"
@@ -971,23 +969,6 @@ def dependent_modules_text(M, server):
 def addon_folder(client, name):
     """Where the game reads the addon of this name."""
     return os.path.join(client.folder, "Interface", "AddOns", name)
-
-
-def extension_folder(client, name):
-    """Where WarcraftXL loads the extension of this id from."""
-    return os.path.join(client.folder, "Extensions", name)
-
-
-def warcraftxl_refusal(M, client):
-    """Why the module's WarcraftXL extensions cannot be installed (None: they can, or it has none)."""
-    if not M.extensions or client is None:
-        return None
-    exe = client.wow_exe
-    if not exe or not wow_exe.runs_warcraftxl(exe):
-        return ("this module needs WarcraftXL in the game (its extension%s %s): %s does not load it"
-                % ("s" if len(M.extensions) > 1 else "", ", ".join(sorted(M.extensions)),
-                   exe or "no Wow.exe in %s" % client.folder))
-    return None
 
 
 def module_lua_files(M, server):
@@ -1172,8 +1153,6 @@ def survey(M, server, client, dbs):
     if M.server_module:
         s.sources = module_source_dirs(M, server)
     s.addons = [d for d in (addon_folder(client, n) for n in M.addons) if os.path.isdir(d)] if client else []
-    s.extensions = [d for d in (extension_folder(client, n) for n in M.extensions)
-                    if os.path.isdir(d)] if client else []
     if M.conf:
         s.confs = [p for p in (os.path.join(server.module_confs, M.conf["file"]),
                                os.path.join(server.module_confs, M.conf["file"] + ".dist"))
@@ -1765,7 +1744,7 @@ def remove(M, server, client, dbs, state, leftovers=False, backup=True, update=F
         say("  deleted: %s" % p)
     if len(state.lua) > 5:
         say("  deleted: %d Lua script(s) of the module" % len(state.lua))
-    for d in state.addons + state.extensions:
+    for d in state.addons:
         remove_tree(d)
         say("  deleted: %s" % d)
     if state.server_data:
@@ -1891,9 +1870,6 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None, 
     refusals = wow_exe_refusals(M, client)
     if any(state != "original" for _, state in refusals):
         raise InstallerError(refusal_text(client, refusals))
-    why = warcraftxl_refusal(M, client)
-    if why:
-        raise InstallerError(why)
     if refusals and not patch_exe:
         raise InstallerError(refusal_text(client, refusals) + ": allow it (--patch-wow-exe in the console)")
 
@@ -2016,12 +1992,6 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None, 
         destination = addon_folder(client, name)
         shutil.copytree(source, destination, ignore=lambda folder, names: [n for n in names if n in NEVER_COPIED])
         say("  copied: %s" % destination)
-
-    # 5c. WarcraftXL extensions, copied as they are into Extensions.
-    for name, source in sorted(M.extensions.items()):
-        destination = extension_folder(client, name)
-        shutil.copytree(source, destination, ignore=lambda folder, names: [n for n in names if n in NEVER_COPIED])
-        say("  copied: %s" % destination)
     if not M.server_module:
         # No module in the sources: the core updater never sees this SQL, the installer applies it
         # (only with a worldserver folder, which gives the databases).
@@ -2102,8 +2072,8 @@ def missing_after_install(M, server, client, dbs):
                 missing.append(q)
     if M.server_data and not os.path.isfile(server_data_receipt(M, server)):
         missing.append(server_data_receipt(M, server))
-    for name, source, target in [(n, s, addon_folder(client, n)) for n, s in M.addons.items()] + \
-            [(n, s, extension_folder(client, n)) for n, s in M.extensions.items()]:
+    for name, source in M.addons.items():
+        target = addon_folder(client, name)
         for folder, _, files in os.walk(source):
             for n in files:
                 p = os.path.join(folder, n)
@@ -2333,9 +2303,6 @@ def update_refusal(M, client, state, patch_exe):
     refusals = wow_exe_refusals(M, client) if client is not None else []
     if any(s != "original" for _, s in refusals):
         return refusal_text(client, refusals)
-    why = warcraftxl_refusal(M, client)
-    if why:
-        return why
     if refusals and not patch_exe:
         return refusal_text(client, refusals) + ": allow it (--patch-wow-exe in the console)"
     return None
