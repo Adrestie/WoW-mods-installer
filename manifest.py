@@ -27,10 +27,13 @@ class DbcDef(object):
     being the list of its values, a string for a text field, an integer
     otherwise. Rows are written with each localized string in every language
     of the client (in_every_language); client_given / server_given keep them
-    as declared."""
+    as declared. owned: [first, last] identifiers the module owns in this file (or None): a row of
+    that range the package no longer has (a rank it dropped) is the module's too, taken out by an
+    update or a removal."""
 
-    def __init__(self, file, fields, text, client, server):
+    def __init__(self, file, fields, text, client, server, owned=None):
         self.file, self.fields, self.text = file, fields, text
+        self.owned = owned
         self.localized = localized_strings(text)
         self.client_given, self.server_given = client, server
         self.client, self.server = [None if rows is None else [in_every_language(r, self.localized) for r in rows]
@@ -141,7 +144,14 @@ def _dbc(root, entry, i):
                 _error(where, "duplicate identifier on the %s side" % side)
     if sides["client"] is None and sides["server"] is None:
         _error(where, 'neither "client" nor "server"')
-    return DbcDef(file, fields, text, sides["client"], sides["server"])
+    owned = entry.get("owned_ids")
+    if owned is not None:
+        if not (isinstance(owned, list) and len(owned) == 2 and all(isinstance(x, int) for x in owned) and owned[0] <= owned[1]):
+            _error(where, '"owned_ids": [first, last], the identifiers the module owns in this file')
+        outside = [i for side in ("client", "server") for i in (r[0] for r in sides[side] or []) if not owned[0] <= i <= owned[1]]
+        if outside:
+            _error(where, '"owned_ids" %s leaves out rows of the package: %s' % (owned, outside[:5]))
+    return DbcDef(file, fields, text, sides["client"], sides["server"], owned)
 
 
 def _game_files(root, entry):

@@ -164,6 +164,7 @@ One entry per DBC file:
 | `client` | `true`: the rows of `rows`; a package path: a reduced DBC that holds only the module's rows; `false` or absent: the game is not touched |
 | `server` | same, for the server file in `<DataDir>/dbc` |
 | `rows` | with `true`: one row per element, either an object `{"index": value}` whose missing fields are 0 or the empty string, or a full list; field 0 is the identifier |
+| `owned_ids` | optional `[first, last]`: identifiers the module alone uses in this file (its range in `ID_RANGES.md`); every row of the package must be in it. A row of that range the package no longer has (a rank an earlier version wrote, then dropped) is the module's: an update or a removal takes it out, on both sides |
 
 `text_fields` must list **every** string field of the file, used by the
 module or not: rows are compared by content, strings as text, and a string

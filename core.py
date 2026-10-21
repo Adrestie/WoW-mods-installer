@@ -473,7 +473,8 @@ def dbc_survey(raw, name, d, rows, given=None):
 
     d: the manifest's DBC entry; rows: the module's rows for this side; given: the same rows as the
     manifest declares them, also the module's (written so by installers that did not fill every
-    language)."""
+    language). A row of the module's own range (d.owned) that the package no longer has is the
+    module's: a rank an earlier version wrote and this one dropped."""
     fields, size, recs, strings = dbc_split(raw, name)
     if fields != d.fields:
         raise InstallerError("%s has %d fields, %d expected: unexpected client version" % (name, fields, d.fields))
@@ -485,6 +486,8 @@ def dbc_survey(raw, name, d, rows, given=None):
         if i in expected:
             values = row_values(r, strings, d.text)
             (ours if values == expected[i] or values == declared.get(i) else others).append(i)
+        elif d.owned and d.owned[0] <= i <= d.owned[1]:
+            ours.append(i)
     return sorted(ours), sorted(others)
 
 
@@ -2133,13 +2136,13 @@ def missing_after_install(M, server, client, dbs):
         if dd.server is not None:
             p = os.path.join(server.dbc, dd.file)
             with open(p, "rb") as f:
-                if len(dbc_survey(f.read(), p, dd, dd.server)[0]) != len(dd.server):
+                if set(dd.server_ids) - set(dbc_survey(f.read(), p, dd, dd.server)[0]):
                     missing.append("%s rows (server)" % dd.file)
         if dd.client is not None:
             name = "DBFilesClient\\" + dd.file
             for view in views:
                 w = view.winner(name)
-                if w is None or len(dbc_survey(view.open(w).read(name), name, dd, dd.client)[0]) != len(dd.client):
+                if w is None or set(dd.client_ids) - set(dbc_survey(view.open(w).read(name), name, dd, dd.client)[0]):
                     missing.append("%s rows in the archive the game reads (%s)" % (dd.file, w))
     for name, source in M.game_files.items():
         with open(source, "rb") as f:
