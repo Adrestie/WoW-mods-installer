@@ -473,8 +473,8 @@ def dbc_survey(raw, name, d, rows, given=None):
 
     d: the manifest's DBC entry; rows: the module's rows for this side; given: the same rows as the
     manifest declares them, also the module's (written so by installers that did not fill every
-    language). A row of the module's own range (d.owned) that the package no longer has is the
-    module's: a rank an earlier version wrote and this one dropped."""
+    language). A row of the module's own range (d.owned) is the module's whatever it holds: a row an
+    earlier version wrote, changed since or dropped (a rank)."""
     fields, size, recs, strings = dbc_split(raw, name)
     if fields != d.fields:
         raise InstallerError("%s has %d fields, %d expected: unexpected client version" % (name, fields, d.fields))
@@ -483,10 +483,12 @@ def dbc_survey(raw, name, d, rows, given=None):
     ours, others = [], []
     for r in recs:
         i = _row_id(r)
+        owned = bool(d.owned) and d.owned[0] <= i <= d.owned[1]
         if i in expected:
             values = row_values(r, strings, d.text)
-            (ours if values == expected[i] or values == declared.get(i) else others).append(i)
-        elif d.owned and d.owned[0] <= i <= d.owned[1]:
+            # another content in the module's own range: an earlier version's row, the module's too
+            (ours if values == expected[i] or values == declared.get(i) or owned else others).append(i)
+        elif owned:
             ours.append(i)
     return sorted(ours), sorted(others)
 
