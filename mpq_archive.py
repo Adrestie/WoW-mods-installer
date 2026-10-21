@@ -594,14 +594,15 @@ def _known_names(a, names):
     return found
 
 
-def _compaction(a, names=()):
+def _compaction(a, names=(), room=0):
     """The compacted archive, worked out in memory: {"order": old block indices in their new order (that
     of their place in the file), "blocks", "hi_blocks", "positions" (of the blocks of order), "hash_table",
     "stored" {old block index: (bytes stored anew, size)}, "name_of_block" {old block index: name}, "hash_pos",
     "block_pos", "hi_pos", "end"}, places relative to the start of the archive.
 
     The hash table is rebuilt without its deleted entries when every file has a known name ((listfile),
-    the special files, names), twice as large while it would be more than three quarters full; otherwise
+    the special files, names), twice as large while it would be more than three quarters full (counting
+    room entries more, for the files about to be written); otherwise
     it keeps its layout, the entries of the files gone marked deleted."""
     if a.signed:
         raise MpqError("%s carries a strong signature: changing it would invalidate it" % a.path)
@@ -627,7 +628,7 @@ def _compaction(a, names=()):
 
     if all(named[i] for i in live):
         size = a.hash_count
-        while (len(live) + 1) * 4 > size * 3:
+        while (len(live) + 1 + room) * 4 > size * 3:
             size *= 2
         hash_table = [[M32, M32, 0xFFFF, 0xFFFF, HASH_ENTRY_EMPTY] for _ in range(size)]
         for i in live:
@@ -712,15 +713,16 @@ def _same_files(a, b, name_of_block):
             raise MpqError("%s: %s is not found the same way in the compacted copy" % (a.path, name))
 
 
-def compact_archive(path, names=()):
+def compact_archive(path, names=(), room=0):
     """Rewrites the archive with the files it holds and nothing else: the space left by the files removed
     or replaced, and by the tables of earlier writes, is given back. Every file keeps its name, language
     and stored bytes (one whose key depends on its place is encrypted again, same content); (listfile)
     is unchanged, (attributes) follows the new block numbers. The new archive is written beside the old
     one (<name>.compact-tmp), compared with it, then put in its place: until then the old one is intact.
-    names: file names known besides those of (listfile). Returns (size before, size after)."""
+    names: file names known besides those of (listfile); room: hash table entries to leave free for
+    files about to be written (the table grows to take them). Returns (size before, size after)."""
     a = Archive(path)
-    c = _compaction(a, names)
+    c = _compaction(a, names, room)
     temporary = path + ".compact-tmp"
     try:
         with open(path, "rb") as src, open(temporary, "wb") as out:

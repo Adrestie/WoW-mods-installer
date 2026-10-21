@@ -1934,13 +1934,26 @@ def install(M, server, client, dbs, patch_exe=False, backup=True, started=None, 
         files, dbc, added = receipts.get(target, ([], {}, set()))
         writes[target][receipt_name(M)] = receipt_text(M, files, dbc, added)
     # Every archive accepts its write (room in its hash table...) before anything is copied or written.
+    # One whose hash table is too small for the new files is compacted first, its table grown to
+    # take them (its files keep their names and bytes).
+    grown = []
     for target, files in writes.items():
-        if target not in created:
+        if target not in created and not mpq_archive.has_room(target, {n: len(c) for n, c in files.items()}):
+            a = mpq_archive.Archive(target)
+            new = sum(1 for n in files if not a.contains(n))
+            grown.append((target, new))
+    for target, files in writes.items():
+        if target not in created and target not in dict(grown):
             mpq_archive.write_into_archive(target, files, check_only=True)
     if backup:
         back_up_archives(sorted(t for t in writes if t not in created),
                          sum(len(c) for files in writes.values() for c in files.values()))
     started["changed"] = True
+    for target, new in grown:
+        before, after = mpq_archive.compact_archive(target, list(writes[target]), room=new + 64)
+        say("  %s: compacted, its hash table grown for %d new file(s) (%s -> %s)"
+            % (target, new, size_text(before), size_text(after)))
+        mpq_archive.write_into_archive(target, writes[target], check_only=True)
     # Wow.exe before the archives: its files never reach a game that would refuse them.
     if refusals:
         copy = wow_exe.patch(client.wow_exe, [check for check, _ in refusals])
